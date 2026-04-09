@@ -38,6 +38,7 @@ vi.mock('ccxt', () => {
     default: {
       bybit: MockExchange,
       binance: MockExchange,
+      kraken: MockExchange,
     },
   }
 })
@@ -270,6 +271,72 @@ describe('CcxtBroker — placeOrder async', () => {
     expect(result.orderId).toBe('ord-42')
     // No execution — exchanges are async, fill confirmed via sync
     expect(result.execution).toBeUndefined()
+  })
+})
+
+describe('CcxtBroker — kraken stop orders', () => {
+  it('maps STP to market + stopLossPrice on Kraken', async () => {
+    const acc = new CcxtBroker({ exchange: 'kraken', apiKey: 'k', apiSecret: 's', sandbox: false })
+    setInitialized(acc, {
+      'ETH/USD': makeSpotMarket('ETH', 'USD', 'ETH/USD'),
+    })
+    ;(acc as any).exchange.createOrder = vi.fn().mockResolvedValue({ id: 'ord-stp', status: 'open' })
+
+    const contract = new Contract()
+    contract.localSymbol = 'ETH/USD'
+
+    const order = new Order()
+    order.action = 'SELL'
+    order.orderType = 'STP'
+    order.totalQuantity = new Decimal('0.1')
+    order.auxPrice = 1800
+
+    const result = await acc.placeOrder(contract, order)
+
+    expect(result.success).toBe(true)
+    expect((acc as any).exchange.createOrder).toHaveBeenCalledWith(
+      'ETH/USD',
+      'market',
+      'sell',
+      0.1,
+      undefined,
+      expect.objectContaining({ stopLossPrice: 1800 }),
+    )
+  })
+
+  it('maps STP LMT to limit + stopLossPrice on Kraken', async () => {
+    const acc = new CcxtBroker({ exchange: 'kraken', apiKey: 'k', apiSecret: 's', sandbox: false })
+    setInitialized(acc, {
+      'ETH/USD': makeSpotMarket('ETH', 'USD', 'ETH/USD'),
+    })
+    ;(acc as any).exchange.createOrder = vi.fn().mockResolvedValue({ id: 'ord-stplmt', status: 'open' })
+
+    const contract = new Contract()
+    contract.localSymbol = 'ETH/USD'
+
+    const order = new Order()
+    order.action = 'SELL'
+    order.orderType = 'STP LMT'
+    order.totalQuantity = new Decimal('0.1')
+    order.auxPrice = 1800
+    order.lmtPrice = 1795
+
+    const result = await acc.placeOrder(contract, order)
+
+    expect(result.success).toBe(true)
+    expect((acc as any).exchange.createOrder).toHaveBeenCalledWith(
+      'ETH/USD',
+      'limit',
+      'sell',
+      0.1,
+      1795,
+      expect.objectContaining({ stopLossPrice: 1800 }),
+    )
+  })
+
+  it('advertises STP and STP LMT capabilities on Kraken', () => {
+    const acc = new CcxtBroker({ exchange: 'kraken', apiKey: 'k', apiSecret: 's', sandbox: false })
+    expect(acc.getCapabilities().supportedOrderTypes).toEqual(['MKT', 'LMT', 'STP', 'STP LMT'])
   })
 })
 

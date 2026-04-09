@@ -405,6 +405,35 @@ export class CcxtBroker implements IBroker<CcxtBrokerMeta> {
     try {
       const params: Record<string, unknown> = { ...extraParams }
 
+      // Kraken spot/margin stop orders are modeled as market/limit orders
+      // plus stopLossPrice, not as a standalone "stop" order type.
+      let ccxtOrderType = ibkrOrderTypeToCcxt(order.orderType)
+      let ccxtPrice = ccxtOrderType === 'limit' && order.lmtPrice !== UNSET_DOUBLE ? order.lmtPrice : undefined
+
+      if (this.exchangeName === 'kraken') {
+        switch (order.orderType) {
+          case 'STP':
+            if (order.auxPrice === UNSET_DOUBLE) {
+              return { success: false, error: 'STP orders require auxPrice (stop trigger)' }
+            }
+            ccxtOrderType = 'market'
+            params.stopLossPrice = order.auxPrice
+            ccxtPrice = undefined
+            break
+          case 'STP LMT':
+            if (order.auxPrice === UNSET_DOUBLE) {
+              return { success: false, error: 'STP LMT orders require auxPrice (stop trigger)' }
+            }
+            if (order.lmtPrice === UNSET_DOUBLE) {
+              return { success: false, error: 'STP LMT orders require lmtPrice (limit price)' }
+            }
+            ccxtOrderType = 'limit'
+            params.stopLossPrice = order.auxPrice
+            ccxtPrice = order.lmtPrice
+            break
+        }
+      }
+
       if (tpsl?.takeProfit) {
         params.takeProfit = { triggerPrice: parseFloat(tpsl.takeProfit.price) }
       }
@@ -415,7 +444,6 @@ export class CcxtBroker implements IBroker<CcxtBrokerMeta> {
         }
       }
 
-      const ccxtOrderType = ibkrOrderTypeToCcxt(order.orderType)
       const side = order.action.toLowerCase() as 'buy' | 'sell'
 
       const ccxtOrder = await this.exchange.createOrder(
@@ -423,7 +451,7 @@ export class CcxtBroker implements IBroker<CcxtBrokerMeta> {
         ccxtOrderType,
         side,
         parseFloat(size),
-        ccxtOrderType === 'limit' && order.lmtPrice !== UNSET_DOUBLE ? order.lmtPrice : undefined,
+        ccxtPrice,
         params,
       )
 
@@ -668,9 +696,13 @@ export class CcxtBroker implements IBroker<CcxtBrokerMeta> {
   // ---- Capabilities ----
 
   getCapabilities(): AccountCapabilities {
+    const supportedOrderTypes = ['MKT', 'LMT']
+    if (this.exchangeName === 'kraken') {
+      supportedOrderTypes.push('STP', 'STP LMT')
+    }
     return {
       supportedSecTypes: ['CRYPTO'],
-      supportedOrderTypes: ['MKT', 'LMT'],
+      supportedOrderTypes,
     }
   }
 
