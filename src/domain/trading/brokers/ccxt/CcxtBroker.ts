@@ -50,6 +50,9 @@ function ibkrOrderTypeToCcxt(orderType: string): string {
   }
 }
 
+const PREFERRED_SPOT_QUOTES = ['USD', 'USDT', 'USDC'] as const
+const CASH_LIKE_ASSETS = new Set(PREFERRED_SPOT_QUOTES)
+
 export interface CcxtBrokerMeta {
   exchange: string  // "bybit", "binance", "okx", etc.
 }
@@ -152,6 +155,93 @@ export class CcxtBroker implements IBroker<CcxtBrokerMeta> {
     if (!this.initialized) {
       throw new BrokerError('CONFIG', `CcxtBroker[${this.id}] not initialized. Call init() first.`)
     }
+  }
+
+  private preferredSpotMarket(baseAsset: string): CcxtMarket | null {
+    const quoteOrder = Object.fromEntries(PREFERRED_SPOT_QUOTES.map((quote, index) => [quote, index])) as Record<string, number>
+    const candidates = Object.values(this.markets)
+      .filter((market) =>
+        market.active !== false
+        && market.type === 'spot'
+        && market.base.toUpperCase() === baseAsset.toUpperCase()
+        && PREFERRED_SPOT_QUOTES.includes(market.quote.toUpperCase() as typeof PREFERRED_SPOT_QUOTES[number]),
+      )
+      .sort((a, b) => (quoteOrder[a.quote.toUpperCase()] ?? 99) - (quoteOrder[b.quote.toUpperCase()] ?? 99))
+
+    return candidates[0] ?? null
+  }
+
+  private async fetchSpotBalancePositions(balance?: Record<string, unknown>): Promise<Position[]> {
+    const totals = ((balance ?? {})['total'] ?? {}) as Record<string, unknown>
+    const result: Position[] = []
+
+    for (const [asset, rawAmount] of Object.entries(totals)) {
+      const quantity = new Decimal(String(rawAmount ?? 0))
+      if (!quantity.isFinite() || quantity.lte(0)) continue
+
+      const upperAsset = asset.toUpperCase()
+      if (CASH_LIKE_ASSETS.has(upperAsset)) continue
+
+      const market = this.preferredSpotMarket(upperAsset)
+      if (!market) continue
+
+      let marketPrice = 0
+      try {
+        const ticker = await this.exchange.fetchTicker(market.symbol)
+        marketPrice = parseFloat(String(ticker.last ?? ticker.bid ?? ticker.ask ?? 0))
+      } catch {
+        marketPrice = 0
+      }
+
+      result.push({
+        contract: marketToContract(market, this.exchangeName),
+        side: 'long',
+        quantity,
+        avgCost: 0,
+        marketPrice,
+        marketValue: quantity.toNumber() * marketPrice,
+        unrealizedPnL: 0,
+        realizedPnL: 0,
+      })
+    }
+
+    return result
+  }
+
+  private async fetchDerivativePositions(): Promise<Position[]> {
+    if (!this.exchange.has.fetchPositions) return []
+
+    const raw = await this.exchange.fetchPositions()
+    const result: Position[] = []
+
+    for (const p of raw) {
+      const market = this.markets[p.symbol]
+      if (!market) continue
+
+      // Use Decimal arithmetic to avoid IEEE 754 precision loss (e.g. 0.51 → 0.50999...)
+      const contracts = new Decimal(String(p.contracts ?? 0)).abs()
+      const contractSize = new Decimal(String(p.contractSize ?? 1))
+      const quantity = contracts.mul(contractSize)
+      if (quantity.isZero()) continue
+
+      const markPrice = parseFloat(String(p.markPrice ?? 0))
+      const entryPrice = parseFloat(String(p.entryPrice ?? 0))
+      const marketValue = quantity.toNumber() * markPrice
+      const unrealizedPnL = parseFloat(String(p.unrealizedPnl ?? 0))
+
+      result.push({
+        contract: marketToContract(market, this.exchangeName),
+        side: p.side === 'long' ? 'long' : 'short',
+        quantity,
+        avgCost: entryPrice,
+        marketPrice: markPrice,
+        marketValue,
+        unrealizedPnL,
+        realizedPnL: parseFloat(String((p as unknown as Record<string, unknown>).realizedPnl ?? 0)),
+      })
+    }
+
+    return result
   }
 
   // ---- Lifecycle ----
@@ -440,33 +530,19 @@ export class CcxtBroker implements IBroker<CcxtBrokerMeta> {
     this.ensureInit()
 
     try {
-      const [balance, rawPositions] = await Promise.all([
-        this.exchange.fetchBalance(),
-        this.exchange.fetchPositions(),
+      const balance = await this.exchange.fetchBalance() as unknown as Record<string, unknown>
+      const [derivativePositions, spotPositions] = await Promise.all([
+        this.fetchDerivativePositions(),
+        this.fetchSpotBalancePositions(balance),
       ])
 
-      const bal = balance as unknown as Record<string, Record<string, unknown>>
+      const bal = balance as Record<string, Record<string, unknown>>
       const free = parseFloat(String(bal['free']?.['USDT'] ?? bal['free']?.['USD'] ?? 0))
       const used = parseFloat(String(bal['used']?.['USDT'] ?? bal['used']?.['USD'] ?? 0))
-
-      // Aggregate P&L and market value from positions.
-      // We use position-level markPrice (which is fresh from the exchange's
-      // websocket feed) rather than balance.total (which is a cached wallet
-      // snapshot that may not update between funding/settlement cycles).
-      let unrealizedPnL = 0
-      let realizedPnL = 0
-      let totalPositionValue = 0
-      for (const p of rawPositions) {
-        unrealizedPnL += parseFloat(String(p.unrealizedPnl ?? 0))
-        realizedPnL += parseFloat(String((p as unknown as Record<string, unknown>).realizedPnl ?? 0))
-
-        // Compute position market value from fresh markPrice
-        const contracts = new Decimal(String(p.contracts ?? 0)).abs()
-        const contractSize = new Decimal(String(p.contractSize ?? 1))
-        const quantity = contracts.mul(contractSize)
-        const markPrice = parseFloat(String(p.markPrice ?? 0))
-        totalPositionValue += quantity.toNumber() * markPrice
-      }
+      const positions = [...derivativePositions, ...spotPositions]
+      const unrealizedPnL = positions.reduce((sum, p) => sum + p.unrealizedPnL, 0)
+      const realizedPnL = positions.reduce((sum, p) => sum + p.realizedPnL, 0)
+      const totalPositionValue = positions.reduce((sum, p) => sum + p.marketValue, 0)
 
       // Reconstruct netLiquidation from fresh components:
       //   netLiq = available cash + total position market value
@@ -490,37 +566,12 @@ export class CcxtBroker implements IBroker<CcxtBrokerMeta> {
     this.ensureInit()
 
     try {
-      const raw = await this.exchange.fetchPositions()
-      const result: Position[] = []
-
-      for (const p of raw) {
-        const market = this.markets[p.symbol]
-        if (!market) continue
-
-        // Use Decimal arithmetic to avoid IEEE 754 precision loss (e.g. 0.51 → 0.50999...)
-        const contracts = new Decimal(String(p.contracts ?? 0)).abs()
-        const contractSize = new Decimal(String(p.contractSize ?? 1))
-        const quantity = contracts.mul(contractSize)
-        if (quantity.isZero()) continue
-
-        const markPrice = parseFloat(String(p.markPrice ?? 0))
-        const entryPrice = parseFloat(String(p.entryPrice ?? 0))
-        const marketValue = quantity.toNumber() * markPrice
-        const unrealizedPnL = parseFloat(String(p.unrealizedPnl ?? 0))
-
-        result.push({
-          contract: marketToContract(market, this.exchangeName),
-          side: p.side === 'long' ? 'long' : 'short',
-          quantity,
-          avgCost: entryPrice,
-          marketPrice: markPrice,
-          marketValue,
-          unrealizedPnL,
-          realizedPnL: parseFloat(String((p as unknown as Record<string, unknown>).realizedPnl ?? 0)),
-        })
-      }
-
-      return result
+      const balance = await this.exchange.fetchBalance() as unknown as Record<string, unknown>
+      const [derivativePositions, spotPositions] = await Promise.all([
+        this.fetchDerivativePositions(),
+        this.fetchSpotBalancePositions(balance),
+      ])
+      return [...derivativePositions, ...spotPositions]
     } catch (err) {
       throw BrokerError.from(err)
     }

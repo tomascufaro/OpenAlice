@@ -15,6 +15,7 @@ vi.mock('ccxt', () => {
   const MockExchange = vi.fn(function (this: any) {
     this.markets = {}
     this.options = { fetchMarkets: { types: ['spot', 'linear'] } }
+    this.has = { fetchPositions: true }
     this.setSandboxMode = vi.fn()
     this.loadMarkets = vi.fn().mockResolvedValue({})
     this.fetchMarkets = vi.fn().mockResolvedValue([])
@@ -269,6 +270,51 @@ describe('CcxtBroker — placeOrder async', () => {
     expect(result.orderId).toBe('ord-42')
     // No execution — exchanges are async, fill confirmed via sync
     expect(result.execution).toBeUndefined()
+  })
+})
+
+// ==================== spot balances ====================
+
+describe('CcxtBroker — spot balances', () => {
+  it('surfaces spot balances as positions when fetchPositions is empty', async () => {
+    const acc = makeAccount()
+    setInitialized(acc, {
+      'ETH/USD': makeSpotMarket('ETH', 'USD', 'ETH/USD'),
+    })
+    ;(acc as any).exchange.fetchBalance = vi.fn().mockResolvedValue({
+      total: { ETH: 0.24506001, USD: 12.5 },
+      free: { USD: 12.5 },
+      used: {},
+    })
+    ;(acc as any).exchange.fetchPositions = vi.fn().mockResolvedValue([])
+    ;(acc as any).exchange.fetchTicker = vi.fn().mockResolvedValue({ last: 3500 })
+
+    const positions = await acc.getPositions()
+
+    expect(positions).toHaveLength(1)
+    expect(positions[0].contract.localSymbol).toBe('ETH/USD')
+    expect(positions[0].quantity.toString()).toBe('0.24506001')
+    expect(positions[0].marketPrice).toBe(3500)
+    expect(positions[0].marketValue).toBeCloseTo(857.710035)
+  })
+
+  it('includes spot balances in account net liquidation', async () => {
+    const acc = makeAccount()
+    setInitialized(acc, {
+      'ETH/USD': makeSpotMarket('ETH', 'USD', 'ETH/USD'),
+    })
+    ;(acc as any).exchange.fetchBalance = vi.fn().mockResolvedValue({
+      total: { ETH: 0.24506001, USD: 12.5 },
+      free: { USD: 12.5 },
+      used: { USD: 0 },
+    })
+    ;(acc as any).exchange.fetchPositions = vi.fn().mockResolvedValue([])
+    ;(acc as any).exchange.fetchTicker = vi.fn().mockResolvedValue({ last: 3500 })
+
+    const account = await acc.getAccount()
+
+    expect(account.totalCashValue).toBe(12.5)
+    expect(account.netLiquidation).toBeCloseTo(870.210035)
   })
 })
 
@@ -829,7 +875,10 @@ describe('CcxtBroker — closePosition reduceOnly', () => {
 describe('CcxtBroker — getAccount', () => {
   it('maps CCXT balance to AccountInfo', async () => {
     const acc = makeAccount()
-    setInitialized(acc, {})
+    setInitialized(acc, {
+      'ETH/USDT:USDT': makeSwapMarket('ETH', 'USDT', 'ETH/USDT:USDT'),
+      'BTC/USDT:USDT': makeSwapMarket('BTC', 'USDT', 'BTC/USDT:USDT'),
+    })
 
     ;(acc as any).exchange.fetchBalance = vi.fn().mockResolvedValue({
       total: { USDT: 10000 },
@@ -839,8 +888,8 @@ describe('CcxtBroker — getAccount', () => {
     // Positions must include contracts/contractSize/markPrice so the broker
     // can reconstruct netLiquidation from fresh position market values.
     ;(acc as any).exchange.fetchPositions = vi.fn().mockResolvedValue([
-      { contracts: 1, contractSize: 1, markPrice: 1500, unrealizedPnl: 500, realizedPnl: 100, side: 'long' },
-      { contracts: 1, contractSize: 1, markPrice: 500, unrealizedPnl: -200, realizedPnl: 50, side: 'long' },
+      { symbol: 'ETH/USDT:USDT', contracts: 1, contractSize: 1, markPrice: 1500, unrealizedPnl: 500, realizedPnl: 100, side: 'long' },
+      { symbol: 'BTC/USDT:USDT', contracts: 1, contractSize: 1, markPrice: 500, unrealizedPnl: -200, realizedPnl: 50, side: 'long' },
     ])
 
     const info = await acc.getAccount()
