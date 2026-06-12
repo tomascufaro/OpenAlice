@@ -730,6 +730,8 @@ describe('TradingGit', () => {
           success: true,
           orderId: 'mkt-1',
           orderState,
+          filledQty: '10',
+          filledPrice: '150',
         }),
       })
       const gitP = new TradingGit(filledConfig)
@@ -740,6 +742,13 @@ describe('TradingGit', () => {
 
       // Filled at push time → should NOT appear as pending
       expect(gitP.getPendingOrderIds()).toHaveLength(0)
+      const commit = gitP.show(gitP.status().head!)
+      expect(commit?.results[0]).toMatchObject({
+        orderId: 'mkt-1',
+        status: 'filled',
+        filledQty: '10',
+        filledPrice: '150',
+      })
     })
   })
 

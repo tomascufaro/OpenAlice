@@ -17,10 +17,13 @@ import { BROKER_ENGINE_REGISTRY } from './registry.js'
 import { getBrokerPreset } from '@traderalice/uta-protocol'
 import type { UTAConfig } from '@/core/config.js'
 import type { FxService } from '../fx-service.js'
+import { SimBroker } from './sim/index.js'
+import type { QuoteFetcher } from './sim/index.js'
 
 /** Optional services brokers can opt into via duck-typed setters. */
 export interface BrokerServices {
   fxService?: FxService
+  simQuoteFetcher?: QuoteFetcher
 }
 
 /** Create an IBroker from account config via preset resolution. */
@@ -33,13 +36,16 @@ export function createBroker(config: UTAConfig, services?: BrokerServices): IBro
   if (!entry) {
     throw new Error(`Unknown broker engine "${preset.engine}" referenced by preset "${preset.id}"`)
   }
-  const broker = entry.fromConfig({
+  const baseConfig = {
     id: config.id,
     label: config.label,
     // keyless flows through brokerConfig so engines that support public-data-only
     // mode (CCXT) can skip credential validation; others ignore it.
     brokerConfig: { ...engineConfig, keyless: config.keyless ?? false },
-  })
+  }
+  const broker = preset.engine === 'sim'
+    ? SimBroker.fromConfig(baseConfig, { quoteFetcher: services?.simQuoteFetcher })
+    : entry.fromConfig(baseConfig)
 
   // Multi-currency-aware brokers (e.g. Longbridge) opt in via setFxService.
   // Single-currency brokers don't expose this method and skip the call.
