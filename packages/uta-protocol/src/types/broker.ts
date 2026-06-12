@@ -113,6 +113,10 @@ export interface PlaceOrderResult {
   message?: string
   execution?: Execution
   orderState?: OrderState
+  /** Decimal string for immediately-filled orders. */
+  filledQty?: string
+  /** Decimal string for immediately-filled orders. */
+  filledPrice?: string
 }
 
 /** An open/completed order triplet as returned by getOrders(). */

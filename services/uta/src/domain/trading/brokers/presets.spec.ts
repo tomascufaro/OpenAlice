@@ -25,6 +25,7 @@ import {
   IBKR_PRESET,
   LONGBRIDGE_PRESET,
   CCXT_CUSTOM_PRESET,
+  SIM_PRESET,
   SIMULATOR_PRESET,
   BUILTIN_BROKER_PRESETS,
 } from '@traderalice/uta-protocol'
@@ -46,6 +47,7 @@ const SAMPLE_CONFIGS: Record<string, Record<string, unknown>> = {
     mode: 'testnet',
     privateKey: '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
   },
+  sim: { initialCash: 1500, currency: 'USD', slippageBps: 5, commissionPerTrade: 1 },
   'mock-simulator': { cash: 50000 },
 }
 
@@ -149,6 +151,11 @@ describe('preset → engine config translation', () => {
   it('CCXT Custom drops empty/undefined optional fields', () => {
     const cfg = CCXT_CUSTOM_PRESET.toEngineConfig({ exchange: 'kucoin', apiKey: 'k', secret: '', uid: undefined })
     expect(cfg).toEqual({ exchange: 'kucoin', apiKey: 'k' })
+  })
+
+  it('SIM passes persistent paper settings straight through', () => {
+    const cfg = SIM_PRESET.toEngineConfig({ initialCash: 1500, currency: 'USD', slippageBps: 5, commissionPerTrade: 1 })
+    expect(cfg).toEqual({ initialCash: 1500, currency: 'USD', slippageBps: 5, commissionPerTrade: 1 })
   })
 })
 

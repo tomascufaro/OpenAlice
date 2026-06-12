@@ -19,6 +19,7 @@ import type { EventLog } from '@/core/event-log.js'
 import type { ToolCenter } from '@/core/tool-center.js'
 import type { ReconnectResult } from '@/core/types.js'
 import type { FxService } from './fx-service.js'
+import type { QuoteFetcher } from './brokers/sim/index.js'
 import './contract-ext.js'
 
 // Manager-level shapes live in `@traderalice/uta-protocol` (the SDK
@@ -42,11 +43,13 @@ export class UTAManager {
   private toolCenter?: ToolCenter
   private _snapshotHooks?: SnapshotHooks
   private fxService?: FxService
+  private simQuoteFetcher?: QuoteFetcher
 
-  constructor(deps?: { eventLog: EventLog; toolCenter: ToolCenter; fxService?: FxService }) {
+  constructor(deps?: { eventLog: EventLog; toolCenter: ToolCenter; fxService?: FxService; simQuoteFetcher?: QuoteFetcher }) {
     this.eventLog = deps?.eventLog
     this.toolCenter = deps?.toolCenter
     this.fxService = deps?.fxService
+    this.simQuoteFetcher = deps?.simQuoteFetcher
   }
 
   setSnapshotHooks(hooks: SnapshotHooks): void {
@@ -61,7 +64,10 @@ export class UTAManager {
 
   /** Create a UTA from config, register it, and start async broker connection. */
   async initUTA(cfg: UTAConfig): Promise<UnifiedTradingAccount> {
-    const broker = createBroker(cfg, { fxService: this.fxService })
+    const broker = createBroker(cfg, {
+      fxService: this.fxService,
+      simQuoteFetcher: this.simQuoteFetcher,
+    })
     const savedState = await loadGitState(cfg.id)
     const uta = new UnifiedTradingAccount(broker, {
       guards: cfg.guards,

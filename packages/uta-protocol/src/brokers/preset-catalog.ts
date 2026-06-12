@@ -15,7 +15,7 @@ import { createHash, randomBytes } from 'node:crypto'
 
 // ==================== Types ====================
 
-export type BrokerEngine = 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'mock'
+export type BrokerEngine = 'ccxt' | 'alpaca' | 'ibkr' | 'leverup' | 'longbridge' | 'mock' | 'sim'
 
 export interface ModeOption {
   id: string
@@ -423,6 +423,34 @@ Paste the **private key of the authorized wallet** below. LeverUp's team confirm
 
 // ==================== Testing presets ====================
 
+export const SIM_PRESET: BrokerPresetDef = {
+  id: 'sim',
+  label: 'Sim Broker (paper)',
+  description: 'Persistent paper account with market-data-priced fills and no broker credentials.',
+  category: 'testing',
+  hint: 'No real credentials required. Market orders fill from the configured market-data quote with optional slippage; limit and stop orders fill lazily when quotes cross their trigger price.',
+  defaultName: 'sim',
+  badge: 'SIM',
+  badgeColor: 'text-yellow-400',
+  engine: 'sim',
+  guardCategory: 'securities',
+  zodSchema: z.object({
+    initialCash: z.coerce.number().positive().default(100_000).describe('Initial Cash'),
+    currency: z.string().default('USD').describe('Base Currency'),
+    slippageBps: z.coerce.number().min(0).default(5).describe('Slippage (bps)'),
+    commissionPerTrade: z.coerce.number().min(0).default(1).describe('Commission Per Trade'),
+  }),
+  subtitleFields: [{ field: 'currency', prefix: 'Sim · ' }],
+  fingerprintFields: ['currency'],
+  toEngineConfig: (d) => ({
+    initialCash: d.initialCash,
+    currency: d.currency,
+    slippageBps: d.slippageBps,
+    commissionPerTrade: d.commissionPerTrade,
+  }),
+  isPaper: () => true,
+}
+
 export const SIMULATOR_PRESET: BrokerPresetDef = {
   id: 'mock-simulator',
   label: 'Simulator (testing only)',
@@ -471,6 +499,7 @@ export const BROKER_PRESET_CATALOG: BrokerPresetDef[] = [
   // Escape hatch — untested CCXT exchanges; lives at the end of Crypto.
   CCXT_CUSTOM_PRESET,
   // ---- Testing ----
+  SIM_PRESET,
   SIMULATOR_PRESET,
 ]
 

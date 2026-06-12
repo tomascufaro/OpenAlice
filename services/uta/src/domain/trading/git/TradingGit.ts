@@ -830,6 +830,8 @@ export class TradingGit implements ITradingGit {
       orderId,
       status: this.mapOrderStatus(orderState),
       orderState,
+      filledQty: rawObj.filledQty as string | undefined,
+      filledPrice: rawObj.filledPrice as string | undefined,
       raw,
     }
   }

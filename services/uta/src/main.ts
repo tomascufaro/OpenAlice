@@ -25,6 +25,7 @@ import { FxService } from './domain/trading/fx-service.js'
 import {
   getSDKExecutor,
   buildRouteMap,
+  SDKEquityClient,
   SDKCurrencyClient,
 } from '@/domain/market-data/client/typebb/index.js'
 import type { CurrencyClientLike } from '@/domain/market-data/client/types.js'
@@ -33,6 +34,7 @@ import { startOrderSyncPoller } from './domain/trading/order-sync-poller.js'
 import { createTradingRoutes } from './http/routes-trading.js'
 import { createSimulatorRoutes } from './http/routes-simulator.js'
 import type { UTAEngineContext } from './types.js'
+import type { Contract } from '@traderalice/ibkr'
 
 const UTA_PORT = Number(process.env['OPENALICE_UTA_PORT'] ?? 47333)
 const CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000  // 6h
@@ -50,7 +52,31 @@ async function main(): Promise<void> {
 
   const eventLog = await createEventLog()
   const toolCenter = new ToolCenter()
-  const utaManager = new UTAManager({ eventLog, toolCenter })
+
+  // ==================== Market-data dependencies ====================
+  // FX and persistent SIM both use the same in-process OpenTypeBB SDK.
+  // SIM only needs a last-trade/close quote for STK/ETF paper fills.
+
+  const { providers } = config.marketData
+  const executor = getSDKExecutor()
+  const routeMap = buildRouteMap()
+  const credentials = buildSDKCredentials(config.marketData.providerKeys)
+  const equityClient = new SDKEquityClient(executor, 'equity', providers.equity, credentials, routeMap)
+  const currencyClient: CurrencyClientLike = new SDKCurrencyClient(executor, 'currency', providers.currency, credentials, routeMap)
+  const fxService = new FxService(currencyClient, undefined, config.marketData.hub)
+  const simQuoteFetcher = async (contract: Contract): Promise<number | string> => {
+    const symbol = contract.symbol ?? contract.aliceId?.split('|').at(-1)
+    if (!symbol) throw new Error('SIM quote requires a contract symbol')
+    const rows = await equityClient.getQuote({ symbol, provider: providers.equity })
+    const quote = rows[0] as Record<string, unknown> | undefined
+    const value = quote?.last_price ?? quote?.close ?? quote?.prev_close ?? quote?.bid ?? quote?.ask
+    if (typeof value !== 'number' && typeof value !== 'string') {
+      throw new Error(`No market-data quote returned for ${symbol}`)
+    }
+    return value
+  }
+
+  const utaManager = new UTAManager({ eventLog, toolCenter, fxService, simQuoteFetcher })
 
   // ==================== Account init (with ephemeral purge) ====================
 
@@ -88,16 +114,6 @@ async function main(): Promise<void> {
   }
   utaManager.registerCcxtToolsIfNeeded()
 
-  // ==================== FX (single-asset-class slice of market-data) ====================
-  // UTA needs only the currency client for USD conversion in
-  // /api/trading/equity. The other market-data clients stay in Alice.
-
-  const { providers } = config.marketData
-  const executor = getSDKExecutor()
-  const routeMap = buildRouteMap()
-  const credentials = buildSDKCredentials(config.marketData.providerKeys)
-  const currencyClient: CurrencyClientLike = new SDKCurrencyClient(executor, 'currency', providers.currency, credentials, routeMap)
-  const fxService = new FxService(currencyClient, undefined, config.marketData.hub)
   utaManager.setFxService(fxService)
 
   // ==================== Snapshots ====================
