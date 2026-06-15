@@ -34,6 +34,7 @@ import {
   listTemplates,
   listWorkspaces,
   pauseSession as apiPauseSession,
+  quickChat as apiQuickChat,
   resumeSession as apiResumeSession,
   spawnSession,
   type AgentInfo,
@@ -48,6 +49,8 @@ const LIST_POLL_MS = 3000
 export interface SpawnOpts {
   readonly resume?: 'last' | string
   readonly agent?: string
+  /** Seed a fresh session with a first message (quick-chat). Ignored when resuming. */
+  readonly initialPrompt?: string
 }
 
 interface WorkspacesContextValue {
@@ -57,6 +60,12 @@ interface WorkspacesContextValue {
   readonly listError: string | null
   refresh(): void
   spawn(wsId: string, opts?: SpawnOpts): Promise<void>
+  /**
+   * Quick-chat launch: reuse-or-create the chat workspace, spawn a fresh
+   * session seeded with `prompt`, and focus into its terminal tab. Rejects on
+   * failure so the composer can surface it.
+   */
+  quickChat(prompt: string, agent?: string): Promise<void>
   pauseSession(wsId: string, sessionId: string): Promise<void>
   resumeSession(wsId: string, sessionId: string): Promise<void>
   deleteSession(wsId: string, sessionId: string): Promise<void>
@@ -165,6 +174,45 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
     [refresh, openOrFocus],
   )
 
+  const quickChat = useCallback(
+    async (prompt: string, agent?: string): Promise<void> => {
+      const { workspace, session } = await apiQuickChat(prompt, agent)
+      const nowIso = new Date().toISOString()
+      const newRecord: SessionRecord = {
+        id: session.sessionId,
+        wsId: workspace.id,
+        agent: session.agent,
+        name: session.name,
+        createdAt: nowIso,
+        lastActiveAt: nowIso,
+        state: 'running',
+        agentSessionId: session.agentSessionId,
+        pid: session.pid,
+        startedAt: session.startedAt,
+      }
+      // Upsert so the terminal slot mounts immediately (before the 3s poll):
+      // append to the reused workspace, or insert the just-created one. The
+      // server's `workspace.sessions` already includes the new session
+      // (publicMeta reads the registry post-create), so dedupe on id in BOTH
+      // branches before appending the optimistic record.
+      const withRecord = (sessions: readonly SessionRecord[]): SessionRecord[] => [
+        ...sessions.filter((s) => s.id !== newRecord.id),
+        newRecord,
+      ]
+      setWorkspaces((prev) => {
+        if (prev.some((w) => w.id === workspace.id)) {
+          return prev.map((w) =>
+            w.id === workspace.id ? { ...w, sessions: withRecord(w.sessions) } : w,
+          )
+        }
+        return [{ ...workspace, sessions: withRecord(workspace.sessions) }, ...prev]
+      })
+      openOrFocus({ kind: 'workspace', params: { wsId: workspace.id, sessionId: session.sessionId } })
+      void refresh()
+    },
+    [refresh, openOrFocus],
+  )
+
   const pauseSession = useCallback(
     async (wsId: string, sessionId: string): Promise<void> => {
       setWorkspaces((prev) =>
@@ -232,6 +280,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
         listError,
         refresh,
         spawn,
+        quickChat,
         pauseSession,
         resumeSession,
         deleteSession,

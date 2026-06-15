@@ -136,9 +136,10 @@ export const CLI_EXPORTS: Record<string, CliExport> = {
     scope: 'scoped',
     description: 'Agent collaboration — push to the user inbox, track entities',
     commands: {
-      // inbox push: surface a doc + comment to the user's Inbox tab. v1 is
-      // comment-only via the CLI (`--comments`); the `docs` array param needs
-      // structured-arg support in the client (a flat flag can't carry it).
+      // inbox push: surface doc(s) + comment to the user's Inbox tab. Attach
+      // files with repeatable `--doc <path>` (the shim folds them into the
+      // `docs: [{ path }]` array; bare paths wrap, JSON objects pass through);
+      // `--comments` carries the markdown note. At least one of the two.
       inbox: {
         push: 'inbox_push',
       },
@@ -163,6 +164,7 @@ export const CLI_EXPORTS: Record<string, CliExport> = {
         search: 'searchContracts',
         details: 'getContractDetails',
         quote: 'getQuote',
+        expand: 'expandContract',
       },
       order: {
         list: 'getOrders',

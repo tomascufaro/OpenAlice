@@ -158,23 +158,6 @@ export function CreateWorkspaceForm(props: CreateWorkspaceFormProps): ReactEleme
         <p className={HINT}>{TAG_HINT}</p>
       </div>
 
-      <div className="space-y-1.5">
-        <label htmlFor="cw-tools" className={LABEL}>
-          {t('createWorkspace.toolsLabel')}
-        </label>
-        <select
-          id="cw-tools"
-          value={create.toolAccess}
-          onChange={(e) => create.setToolAccess(e.target.value as 'mcp' | 'cli')}
-          disabled={create.creating}
-          className={FIELD}
-        >
-          <option value="cli">{t('createWorkspace.toolsCli')}</option>
-          <option value="mcp">{t('createWorkspace.toolsMcp')}</option>
-        </select>
-        <p className={HINT}>{t('createWorkspace.toolsHint')}</p>
-      </div>
-
       {create.error && <div className="text-[12px] text-red">{create.error}</div>}
 
       <div className="flex items-center justify-end gap-2 pt-1">

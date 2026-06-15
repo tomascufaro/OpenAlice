@@ -81,6 +81,19 @@ describe('CLI gateway — data export', () => {
     expect(res.status).toBe(400)
   })
 
+  it('invoke 400s LOUDLY on an unknown flag, naming the key', async () => {
+    // Guards the silent-drop bug: a typo'd flag (--quantity for
+    // --totalQuantity) was stripped by non-strict parsing, staging a
+    // quantity-less order that validated clean.
+    const res = await post('/cli/ws1/data/invoke', {
+      tool: 'calculate',
+      args: { expression: '1 + 1', expresion: 'typo' },
+    })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string; details?: string }
+    expect(body.details).toMatch(/expresion/)
+  })
+
   it('invoke 404s on unknown workspace', async () => {
     const res = await post('/cli/nope/data/invoke', { tool: 'calculate', args: { expression: '1' } })
     expect(res.status).toBe(404)

@@ -89,7 +89,14 @@ export const opencodeAdapter: CliAdapter = {
     // the command head is just the binary + a resume flag (if any). Resume is a
     // top-level flag on the bare TUI — verified against opencode 1.16.0.
     const head = ['opencode'];
-    if (ctx.resume === undefined) return head;
+    if (ctx.resume === undefined) {
+      // Quick-chat seed: `opencode --prompt <text>` opens the TUI seeded with
+      // that first message (top-level flag on the default TUI command, verified
+      // 1.16.0). The value is a flag argument, so a `-`-leading prompt needs no
+      // `--` terminator. Fresh spawns only.
+      if (ctx.initialPrompt) return [...head, '--prompt', ctx.initialPrompt];
+      return head;
+    }
     if (ctx.resume === 'last') return [...head, '--continue'];
     return [...head, '--session', ctx.resume.sessionId];
   },

@@ -6,7 +6,7 @@ const now = Date.now()
 const demoHeadlessTasks: HeadlessTaskRecord[] = [
   {
     taskId: 'demo-headless-1',
-    wsId: 'demo-finance-research',
+    wsId: 'demo-ws',
     agent: 'codex',
     prompt: 'Compute a quant snapshot of NVDA and push a report to the inbox.',
     status: 'done',
@@ -27,7 +27,7 @@ const demoHeadlessTasks: HeadlessTaskRecord[] = [
   },
   {
     taskId: 'demo-headless-3',
-    wsId: 'demo-finance-research',
+    wsId: 'demo-ws',
     agent: 'pi',
     prompt: 'Refresh the uranium watchlist and note any breakouts.',
     status: 'interrupted',

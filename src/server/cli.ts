@@ -161,8 +161,10 @@ export function registerCliRoutes(app: Hono, deps: CliGatewayDeps): void {
       body.args && typeof body.args === 'object' ? (body.args as Record<string, unknown>) : {}
 
     // Same validate+coerce path as the MCP boundary (string -> number etc.),
-    // so the client may send every flag as a raw string.
-    const schema = z.object(extractMcpShape(tool))
+    // so the client may send every flag as a raw string. strictObject: an
+    // unknown flag must error, not silently vanish — a typo'd --quantity
+    // once staged a quantity-less order that validated clean.
+    const schema = z.strictObject(extractMcpShape(tool))
     let validated: Record<string, unknown>
     try {
       validated = await schema.parseAsync(rawArgs)

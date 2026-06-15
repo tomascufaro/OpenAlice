@@ -18,7 +18,16 @@ export const workspacesHandlers = [
     HttpResponse.text('', { status: 404 }),
   ),
 
-  http.get('/api/workspaces/agents', () => HttpResponse.json({ agents: [] })),
+  http.get('/api/workspaces/agents', () =>
+    HttpResponse.json({
+      agents: [
+        { id: 'claude', displayName: 'Claude Code', capabilities: { parallelPerCwd: true, resumeLast: false, resumeById: true, transcriptDiscovery: 'fs-watch' } },
+        { id: 'codex', displayName: 'Codex', capabilities: { parallelPerCwd: true, resumeLast: true, resumeById: true, transcriptDiscovery: 'subprocess' } },
+        { id: 'opencode', displayName: 'opencode', capabilities: { parallelPerCwd: true, resumeLast: true, resumeById: true, transcriptDiscovery: 'subprocess' } },
+        { id: 'pi', displayName: 'Pi', capabilities: { parallelPerCwd: true, resumeLast: true, resumeById: true, transcriptDiscovery: 'none' } },
+      ],
+    }),
+  ),
   http.get('/api/workspaces/credentials', () => HttpResponse.json({ credentials: [] })),
   http.post('/api/workspaces/credentials', () =>
     HttpResponse.json({ slug: 'custom-1', vendor: 'custom' }, { status: 201 }),
@@ -50,6 +59,27 @@ export const workspacesHandlers = [
       agentSessionId: null,
     }),
   ),
+
+  // Quick-chat launch — reuse the first demo chat workspace and hand back the
+  // scripted demo session (the Terminal short-circuits to DemoTerminalReplay).
+  http.post('/api/workspaces/quick-chat', () => {
+    const ws = demoWorkspaces[0]
+    return HttpResponse.json(
+      {
+        workspace: ws,
+        session: {
+          sessionId: 'demo-session',
+          wsId: ws?.id ?? 'demo-ws',
+          name: 'c1',
+          pid: 0,
+          startedAt: Date.now(),
+          agent: 'claude',
+          agentSessionId: null,
+        },
+      },
+      { status: 201 },
+    )
+  }),
   http.post('/api/workspaces/:id/sessions/:sid/pause', () => HttpResponse.json(true)),
   http.post('/api/workspaces/:id/sessions/:sid/resume', () => HttpResponse.json(null)),
   http.delete('/api/workspaces/:id/sessions/:sid', () => HttpResponse.json(true)),

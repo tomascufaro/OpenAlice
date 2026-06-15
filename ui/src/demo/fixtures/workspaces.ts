@@ -1,12 +1,10 @@
 import type { Workspace, TemplateInfo, SessionRecord } from '../../components/workspace/api'
 
 // The flagship demo workspace — the one inbox/transcript fixtures tie to.
-// Template is `finance-research` because the AAPL Q1 transcript IS a
-// finance-research session (read SEC filings, compute services-rev YoY,
-// write report, inbox_push). Using a real template name (vs the earlier
-// `demo-template` placeholder) makes the Workspaces sidebar group it
-// correctly AND keeps the door open for the Chat shortcut sidebar to find
-// its own workspace via the `chat` template filter.
+// Template is `chat` (the general-purpose workspace): the AAPL Q1 transcript
+// is a research session (read SEC filings, compute services-rev YoY, write
+// report, inbox_push), which Chat handles fine. A real template name makes
+// the Workspaces sidebar group it correctly.
 export const DEMO_WORKSPACE_ID = 'demo-ws'
 export const DEMO_SESSION_ID = 'demo-session'
 
@@ -28,7 +26,7 @@ export const demoWorkspace: Workspace = {
   tag: 'aapl-q1',
   dir: '/demo/workspaces/aapl-q1',
   createdAt: new Date().toISOString(),
-  template: 'finance-research',
+  template: 'chat',
   spawnedFromVersion: '0.1.0',
   currentVersion: '0.1.0',
   upgradeAvailable: null,
@@ -73,35 +71,22 @@ export const demoChatWorkspace: Workspace = {
 
 export const demoWorkspaces: Workspace[] = [demoWorkspace, demoChatWorkspace]
 
-// Templates — names + metadata mirror the real templates at
-// src/workspaces/templates/{chat,finance-research}/template.json. Aligning
-// the names matters: Chat / Workspaces sidebars filter on the literal
-// 'chat' / 'finance-research' template name.
-export const financeResearchTemplate: TemplateInfo = {
-  name: 'finance-research',
-  displayName: 'Finance Research',
-  description:
-    'Finance research workspace bundling himself65/finance-skills (yfinance market data, valuation, earnings, social readers, sentiment).',
-  groupOrder: 30,
-  community: true,
-  defaultAgents: ['claude', 'codex'],
-  version: '0.1.0',
-  hasReadme: false,
-}
-
+// Templates — names + metadata mirror the real template at
+// src/workspaces/templates/chat/template.json. The name matters: the Chat /
+// Workspaces sidebars filter on the literal 'chat' template name.
 export const chatTemplate: TemplateInfo = {
   name: 'chat',
   displayName: 'Chat',
   description:
-    "General-purpose Alice workspace — Alice's full tool surface (market/research data + trading) via the alice*/traderhub CLIs by default, or as MCP servers, per launch choice.",
+    "General-purpose Alice workspace — Alice's full tool surface (market/research data + trading) via the alice*/traderhub CLIs on PATH.",
   groupOrder: 10,
   defaultAgents: ['claude', 'codex'],
   version: '0.1.0',
   hasReadme: false,
 }
 
-export const demoTemplates: TemplateInfo[] = [chatTemplate, financeResearchTemplate]
+export const demoTemplates: TemplateInfo[] = [chatTemplate]
 
 // Back-compat singleton for older callers (other fixture files reference
 // `demoTemplate` and we want a stable name). Points at the flagship.
-export const demoTemplate: TemplateInfo = financeResearchTemplate
+export const demoTemplate: TemplateInfo = chatTemplate

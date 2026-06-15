@@ -23,6 +23,13 @@ export interface SessionFactoryContext {
   readonly recordName: string;
   /** Shell-resume preamble: bytes prepended to the new PTY's ReplayBuffer. */
   readonly initialReplayBytes?: Buffer;
+  /**
+   * Quick-chat seed: a first user message the FRESH interactive TUI opens
+   * already working on (threaded into the adapter's `composeCommand` argv).
+   * Ignored when `resume` is set; `shell` ignores it always. See
+   * `SpawnContext.initialPrompt`.
+   */
+  readonly initialPrompt?: string;
 }
 
 /**

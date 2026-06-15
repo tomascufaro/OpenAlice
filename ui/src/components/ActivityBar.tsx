@@ -104,7 +104,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { page: 'inbox',      labelKey: 'nav.item.inbox',      icon: Inbox, defaultTab: { kind: 'inbox', params: {} } },
       { page: 'tracked',    labelKey: 'nav.item.tracked',    icon: Telescope, defaultTab: { kind: 'tracked', params: {} } },
-      { page: 'chat',       labelKey: 'nav.item.chat',       icon: MessageSquare },
+      { page: 'chat',       labelKey: 'nav.item.chat',       icon: MessageSquare, defaultTab: { kind: 'chat-landing', params: {} } },
       { page: 'workspaces', labelKey: 'nav.item.workspaces', icon: TerminalSquare },
       { page: 'market',     labelKey: 'nav.item.market',     icon: BarChart3 },
       { page: 'news',       labelKey: 'nav.item.news',       icon: Newspaper, defaultTab: { kind: 'news', params: {} } },

@@ -91,6 +91,19 @@ describe('compactOperation / compactStatus / compactResult', () => {
     expect(r).toEqual({ action: 'placeOrder', success: false, status: 'rejected', error: 'price band', rejectReason: 'okx 51138' })
   })
 
+  it('compactResult surfaces bracket leg ids (agent confirmation that protective legs exist)', () => {
+    const r = compactResult({
+      action: 'placeOrder', success: true, status: 'submitted', orderId: 'parent-1',
+      legs: [{ orderId: 'tp-1', kind: 'takeProfit' }, { orderId: 'sl-1', kind: 'stopLoss' }],
+      raw: { huge: 'payload' },
+    })
+    expect(r['legs']).toEqual([
+      { orderId: 'tp-1', kind: 'takeProfit' },
+      { orderId: 'sl-1', kind: 'stopLoss' },
+    ])
+    expect('raw' in r).toBe(false)
+  })
+
   it('compactStatus compacts staged ops and renames pending→awaitingApproval', () => {
     const idle = compactStatus({
       staged: [{ action: 'cancelOrder', orderId: 'o1' }],

@@ -30,10 +30,10 @@ export function UrlAdopter() {
         <Route path="/" element={<Navigate to="/inbox" replace />} />
 
         {/* Activities */}
-        {/* Legacy /chat URLs (the retired traditional-chat surface) →
-            Inbox, so any stale bookmark or persisted history entry lands
-            on the live surface instead of a 404. */}
-        <Route path="/chat" element={<Navigate to="/inbox" replace />} />
+        {/* /chat → the "Ask Alice" quick-chat landing (composer). Legacy
+            /chat/:channelId (the retired traditional-chat channels) still
+            redirects to Inbox so stale bookmarks land on a live surface. */}
+        <Route path="/chat" element={<AdoptStatic spec={{ kind: 'chat-landing', params: {} }} />} />
         <Route path="/chat/:channelId" element={<Navigate to="/inbox" replace />} />
         <Route path="/portfolio" element={<AdoptStatic spec={{ kind: 'portfolio', params: {} }} />} />
         <Route path="/automation" element={<Navigate to="/automation/flow" replace />} />
@@ -240,6 +240,7 @@ function specToSection(spec: ViewSpec): ActivitySection {
   switch (spec.kind) {
     case 'inbox':              return 'inbox'
     case 'tracked':            return 'tracked'
+    case 'chat-landing':       return 'chat'
     case 'workspace':
     case 'workspace-list':
     case 'template-catalog':

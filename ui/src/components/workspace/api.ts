@@ -82,12 +82,11 @@ export async function createWorkspace(
   tag: string,
   template: string,
   agents: readonly string[],
-  toolAccess?: 'mcp' | 'cli',
 ): Promise<CreateResult> {
   const res = await fetch('/api/workspaces', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ tag, template, agents, toolAccess }),
+    body: JSON.stringify({ tag, template, agents }),
   });
   if (res.ok) {
     const body = (await res.json()) as { workspace: Workspace };
@@ -210,6 +209,12 @@ export interface SpawnOptions {
   readonly resume?: 'last' | string;
   /** Override workspace's default adapter (workspace.agents[0]). */
   readonly agent?: string;
+  /**
+   * Seed a FRESH session with a first user message — the quick-chat launch
+   * ("type a message → you're in, agent already working"). Server-side it rides
+   * the adapter's interactive `composeCommand`; ignored when `resume` is set.
+   */
+  readonly initialPrompt?: string;
 }
 
 export async function spawnSession(
@@ -219,6 +224,7 @@ export async function spawnSession(
   const body: Record<string, unknown> = {};
   if (opts.resume !== undefined) body['resume'] = opts.resume;
   if (opts.agent !== undefined) body['agent'] = opts.agent;
+  if (opts.initialPrompt !== undefined) body['initialPrompt'] = opts.initialPrompt;
   const res = await fetch(
     `/api/workspaces/${encodeURIComponent(id)}/sessions/spawn`,
     {
@@ -232,6 +238,32 @@ export async function spawnSession(
     throw new Error(`spawn session failed: ${res.status} ${msg}`);
   }
   return (await res.json()) as SpawnedSession;
+}
+
+/** Response of the quick-chat launch: the (reused-or-created) chat workspace + the seeded session. */
+export interface QuickChatResult {
+  readonly workspace: Workspace;
+  readonly session: SpawnedSession;
+}
+
+/**
+ * Quick-chat launch — the "type a message → you're in" front door. One POST
+ * reuses-or-creates the chat workspace and spawns a fresh session seeded with
+ * `prompt`; the returned `session.sessionId` is what the caller attaches to.
+ */
+export async function quickChat(prompt: string, agent?: string): Promise<QuickChatResult> {
+  const body: Record<string, unknown> = { prompt };
+  if (agent !== undefined) body['agent'] = agent;
+  const res = await fetch('/api/workspaces/quick-chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => '');
+    throw new Error(`quick chat failed: ${res.status} ${msg}`);
+  }
+  return (await res.json()) as QuickChatResult;
 }
 
 /** Pause a session — kills its PTY but keeps the record so it can be resumed later. */

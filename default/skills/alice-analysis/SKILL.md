@@ -1,29 +1,27 @@
 ---
-name: openalice-quant
+name: alice-analysis
 description: >
-  How to compute technical analysis with OpenAlice's Quant Calculator (v2) — a
-  small Python/pandas-subset scripting language over K-lines, keyed by barId so
-  you compute on a SPECIFIC source (a broker's bars matching what you trade, or a
-  named vendor) and can batch many timeframes/symbols/indicators in ONE call.
-  Use whenever the task is technical/quantitative on price data: "RSI on BTC",
-  "is AAPL above its 200-day", "50/200 golden cross check", "multi-timeframe
-  momentum", "how extended is X (z-score)", "does this track the sector
-  (correlation)", "trend strength", "compare 1h/4h/12h at once". Two tools:
-  `searchBars` (find a barId) then `calculateQuant` (compute) — or via CLI,
-  `alice analysis search-bars` then `alice analysis quant`.
+  How to compute technical analysis with OpenAlice's Quant Calculator (v2) via
+  `alice analysis` — a small Python/pandas-subset scripting language over
+  K-lines, keyed by barId so you compute on a SPECIFIC source (a broker's bars
+  matching what you trade, or a named vendor) and can batch many
+  timeframes/symbols/indicators in ONE call. Use whenever the task is
+  technical/quantitative on price data: "RSI on BTC", "is AAPL above its
+  200-day", "50/200 golden cross check", "multi-timeframe momentum", "how
+  extended is X (z-score)", "does this track the sector (correlation)", "trend
+  strength", "compare 1h/4h/12h at once". Reach it with
+  `alice analysis search-bars` (find a barId) then `alice analysis quant`
+  (compute).
 ---
 
-# OpenAlice Quant Calculator (v2)
+# `alice analysis` — Quant Calculator (v2)
 
 A bounded, side-effect-free expression language for technical analysis. You write
 a short script; it fetches K-lines by **barId** and returns a value (or a panel
-of values). Get barIds from `searchBars` first.
+of values). Get barIds from `alice analysis search-bars` first.
 
 ## The loop
 
-**MCP tools:** `searchBars({ query })` → pick a `barId` → `calculateQuant({ script })`.
-
-**CLI (workspace agents):**
 ```bash
 alice analysis search-bars --query AAPL
 alice analysis quant --script $'s = bars("yfinance|AAPL", "1d", count=250, asset="equity")\nsma(s.close, 50)'
@@ -39,7 +37,7 @@ sma(s.close, 50) - sma(s.close, 200)        # +ve = 50 above 200 (uptrend)
 ```
 
 **`bars(barId, interval, count=, asOf=, start=, end=, asset=)`**
-- `barId`: `"{source}|{symbol}"` from searchBars. Broker (`alpaca-paper|AAPL`,
+- `barId`: `"{source}|{symbol}"` from search-bars. Broker (`alpaca-paper|AAPL`,
   `binance-readonly|BTC/USDT`) needs NO `asset=`; vendor (`yfinance|AAPL`,
   `fmp|AAPL`) needs `asset="equity"|"crypto"|"currency"|"commodity"`.
 - `interval`: `1m 5m 15m 30m 1h 4h 1d 1w`.
@@ -124,5 +122,5 @@ supported here).
 - Vendor barIds need `asset=`; broker barIds infer it.
 - No conditionals/booleans (no `if`, no crossover operator) — compute the parts
   and compare in your own reasoning, or return them in a panel.
-- For arbitrary/looping logic beyond these primitives, use an auto-quant
-  workspace, not this tool.
+- For arbitrary/looping logic beyond these primitives, spawn a separate
+  Auto-Quant workspace, not this tool.

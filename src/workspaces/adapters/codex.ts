@@ -79,7 +79,15 @@ export const codexAdapter: CliAdapter = {
    */
   composeCommand(_base: readonly string[], ctx: SpawnContext): readonly string[] {
     const head = codexMcpHead(ctx);
-    if (ctx.resume === undefined) return head;
+    if (ctx.resume === undefined) {
+      // Quick-chat seed: `codex [-c …] -- <prompt>` opens the interactive TUI on
+      // that prompt ("Optional user prompt to start the session" per `codex
+      // --help`). `--` terminates options so a `-`-leading prompt is safe (codex
+      // accepts `--` at the top level; verified). Seeding only on fresh spawns —
+      // codex's `resume <id>` subcommand has no positional-prompt slot.
+      if (ctx.initialPrompt) return [...head, '--', ctx.initialPrompt];
+      return head;
+    }
     if (ctx.resume === 'last') return [...head, 'resume', '--last'];
     return [...head, 'resume', ctx.resume.sessionId];
   },

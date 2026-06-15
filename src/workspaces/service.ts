@@ -42,6 +42,7 @@ import { SessionRegistry, type SessionRecord } from './session-registry.js';
 import { buildSpawnEnv } from './spawn-env.js';
 import { readReadmeVersion, TemplateRegistry } from './template-registry.js';
 import { TranscriptWatcher } from './transcript-watcher.js';
+import { resolveLaunchCommand } from './win-command.js';
 import { WorkspaceCreator } from './workspace-creator.js';
 import { WorkspaceRegistry, type WorkspaceMeta } from './workspace-registry.js';
 
@@ -201,7 +202,7 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
       templateDir: '',
       version: '0.0.0',
       defaultAgents: ['claude'],
-      injectMcp: false,
+      injectTools: false,
       injectPersona: false,
       bundledSkills: [],
     });
@@ -258,6 +259,7 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
     ws: WorkspaceMeta,
     adapter: CliAdapter,
     resume: SessionFactoryContext['resume'],
+    initialPrompt?: string,
   ): {
     command: readonly string[];
     cwd: string;
@@ -279,17 +281,43 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
       // workspace's git repo.
       PATH: `${cliBinPath()}${pathDelimiter}${process.env.PATH ?? ''}`,
     }, ws.dir);
-    const spawnCtx = {
+    const baseCtx = {
       ...(resume !== undefined ? { resume } : {}),
       cwd: ws.dir,
       env: baseEnv,
     };
     // Adapter-contributed env (e.g. codex sets CODEX_HOME=<cwd>/.codex so
     // the CLI reads workspace-local config). Merged AFTER baseEnv so the
-    // adapter wins on key collisions.
-    const adapterEnv = adapter.composeEnv?.(spawnCtx) ?? {};
+    // adapter wins on key collisions. (Independent of the seed below — every
+    // adapter's composeEnv ignores initialPrompt.)
+    const adapterEnv = adapter.composeEnv?.(baseCtx) ?? {};
     const env = { ...baseEnv, ...adapterEnv };
-    const command = adapter.composeCommand(config.command, spawnCtx);
+
+    // Quick-chat seed — the caller (the pool factory) passes `initialPrompt` ONLY
+    // on a genuinely fresh spawn, so we don't re-gate on `resume` (pi rewrites a
+    // fresh spawn's resume to its assigned `{ sessionId }`, so a resume check
+    // would wrongly drop pi's seed — the adapters self-gate where it matters).
+    //
+    // SECURITY (win32): opencode/pi install as `.cmd` npm shims, so they spawn via
+    // `cmd.exe /d /c <shim> …` (resolveLaunchCommand → viaShell). A user prompt
+    // with cmd metacharacters (& | < > ^ %) would be re-parsed by cmd.exe
+    // (BatBadBut / CVE-2024-27980); the headless path refuses shim agents on win32
+    // for exactly this. We compose WITH the seed, then if the RESOLVED binary
+    // needs the shell wrap, DROP the seed and recompose unseeded (the TUI still
+    // opens, just not pre-filled). Native-exe agents (claude/codex) and all of
+    // macOS/Linux resolve viaShell:false, so this is a no-op there. Resolve the
+    // COMPOSED argv0 (the adapter's real binary), not config.command — codex/
+    // opencode/pi ignore the base and hardcode their own binary.
+    const compose = (withSeed: boolean): readonly string[] =>
+      adapter.composeCommand(
+        config.command,
+        withSeed && initialPrompt ? { ...baseCtx, initialPrompt } : baseCtx,
+      );
+    let command = compose(true);
+    if (initialPrompt && resolveLaunchCommand(command, { env }).viaShell) {
+      launcherLogger.warn('spawn.seed_dropped_win32_shim', { wsId: ws.id, agent: adapter.id });
+      command = compose(false);
+    }
     const transcriptDir = adapter.transcriptDir ? adapter.transcriptDir(ws.dir) : null;
     return { command, cwd: ws.dir, env, transcriptDir };
   };
@@ -433,8 +461,13 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
       // fragile `--continue`/last. The record is pre-allocated (SessionPool.spawn
       // takes a pre-allocated recordId), so the registry update is safe;
       // fire-and-forget like the transcript-watcher's hint write.
+      // Capture fresh-ness BEFORE the assigned-id rewrite below: an id-assigning
+      // adapter (pi) overwrites `resume` to `{ sessionId }` on a fresh spawn, so
+      // `resume === undefined` is no longer a valid "is this fresh?" test once we
+      // pass it down — the quick-chat seed must key off the ORIGINAL intent.
+      const isFresh = ctx.resume === undefined;
       let resume = ctx.resume;
-      if (resume === undefined && adapter.capabilities.assignsSessionId) {
+      if (isFresh && adapter.capabilities.assignsSessionId) {
         const sessionId = randomUUID();
         resume = { sessionId };
         void sessionRegistry
@@ -443,7 +476,14 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
             launcherLogger.warn('assigned_session_id.persist_failed', { wsId, recordId: ctx.recordId, err }),
           );
       }
-      const { command: composedCommand, env, transcriptDir } = composeSpawnInputs(ws, adapter, resume);
+      const { command: composedCommand, env, transcriptDir } = composeSpawnInputs(
+        ws,
+        adapter,
+        resume,
+        // Seed only on a genuinely fresh spawn (not a resume that an id-assigning
+        // adapter rewrote into a `{ sessionId }` intent).
+        isFresh ? ctx.initialPrompt : undefined,
+      );
 
       // path.trace — single line capturing every path the spawn touches. The
       // raison d'être of the workspace-sessions.log file: any two fields that
@@ -465,6 +505,9 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
           ? 'fresh'
           : resume === 'last' ? 'last' : 'by-id',
         resumeId: resume && resume !== 'last' ? resume.sessionId : null,
+        // grep-able flag; the prompt text itself is already in composedCommand.
+        // Keys off the original fresh-ness, not `resume` (pi rewrites it).
+        seeded: isFresh && !!ctx.initialPrompt,
       });
 
       return {

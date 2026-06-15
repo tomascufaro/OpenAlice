@@ -7,7 +7,7 @@
 
 import type { Contract, Order, OrderCancel, Execution, OrderState } from '@traderalice/ibkr'
 import type Decimal from 'decimal.js'
-import type { Position, OpenOrder, TpSlParams } from './broker.js'
+import type { Position, OpenOrder, TpSlParams, PlaceOrderLeg } from './broker.js'
 import './contract-ext.js'
 
 // ==================== Commit Hash ====================
@@ -69,6 +69,10 @@ export interface OperationResult {
   /** Decimal as string — see filledQty. */
   filledPrice?: string
   error?: string
+  /** Bracket TP/SL child orders created alongside this placeOrder (tracked from birth). */
+  legs?: PlaceOrderLeg[]
+  /** Symbol for per-row attribution in multi-update sync commits (the op carries none). */
+  symbol?: string
   raw?: unknown
 }
 
@@ -279,7 +283,8 @@ export interface StageClosePositionParams {
 // ==================== Operation Helpers ====================
 
 /** Extract the symbol from any Operation variant. */
-export function getOperationSymbol(op: Operation): string {
+export function getOperationSymbol(op: Operation | undefined): string {
+  if (!op) return 'unknown'
   switch (op.action) {
     case 'placeOrder': return op.contract?.symbol || op.contract?.aliceId || 'unknown'
     case 'modifyOrder': return 'unknown' // modifyOrder doesn't carry contract

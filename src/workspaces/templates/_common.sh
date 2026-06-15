@@ -71,8 +71,8 @@ copy_readme() {
 # All five carry a per-workspace API key once a provider is configured (UI or
 # template-injected), so they must never reach a commit.
 # Extra paths passed as args are appended too — useful for templates that
-# clone third-party content (e.g. finance-research clones .finance-skills/
-# and doesn't want git add . to swallow it).
+# clone third-party content into a subdir and don't want git add . to
+# swallow it.
 # Caller must ensure .git/ exists (run after `git init` or `git clone`).
 setup_git_excludes() {
   if [[ ! -d .git ]]; then

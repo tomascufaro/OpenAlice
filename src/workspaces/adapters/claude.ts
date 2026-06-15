@@ -63,7 +63,14 @@ export const claudeAdapter: CliAdapter = {
 
   composeCommand(base: readonly string[], ctx: SpawnContext): readonly string[] {
     const cmd = [...base, '--settings', AUTOTRUST_SETTINGS];
-    if (ctx.resume === undefined) return cmd;
+    if (ctx.resume === undefined) {
+      // Quick-chat seed: `claude [flags] -- <prompt>` opens the interactive TUI
+      // and auto-submits the prompt. The `--` end-of-options terminator (same as
+      // the headless path) keeps a prompt starting with `-`/`--` from being
+      // mis-parsed as a flag (claude accepts `--` interactively; verified).
+      if (ctx.initialPrompt) return [...cmd, '--', ctx.initialPrompt];
+      return cmd;
+    }
     if (ctx.resume === 'last') {
       throw new Error(
         'claude adapter: "last" resume not supported — use --resume <sessionId> or undefined (fresh)',

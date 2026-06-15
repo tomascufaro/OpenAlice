@@ -8,8 +8,8 @@
  */
 
 import Decimal from 'decimal.js'
-import { Contract, Order, ContractDescription, ContractDetails, UNSET_DECIMAL } from '@traderalice/ibkr'
-import { BrokerError, type IBroker, type AccountInfo, type Position, type OpenOrder, type PlaceOrderResult, type Quote, type MarketClock, type AccountCapabilities, type BrokerHealth, type BrokerHealthInfo, type UTAReach, type UTATier, type TpSlParams, type Bar, type BarParams } from './brokers/types.js'
+import { Contract, Order, ContractDescription, ContractDetails, UNSET_DECIMAL, UNSET_INTEGER, UNSET_DOUBLE } from '@traderalice/ibkr'
+import { BrokerError, type IBroker, type AccountInfo, type Position, type OpenOrder, type PlaceOrderResult, type Quote, type MarketClock, type AccountCapabilities, type BrokerHealth, type BrokerHealthInfo, type UTAReach, type UTATier, type TpSlParams, type Bar, type BarParams, type ExpandContractFilters, type ContractExpansion } from './brokers/types.js'
 
 const REACH_RANK: Record<UTAReach, number> = { down: 0, connected: 1, readable: 2 }
 import { TradingGit } from './git/TradingGit.js'
@@ -436,8 +436,52 @@ export class UnifiedTradingAccount {
     }
   }
 
+  /**
+   * Per-orderType required-field gate, enforced at stage time so a broken
+   * order can never reach staging/commit. Without this, a caller that loses
+   * fields on the way in (e.g. a CLI typo like --quantity for --totalQuantity)
+   * stages a quantity-less LMT order that looks perfectly committable.
+   */
+  private _validatePlaceOrderParams(p: StagePlaceOrderParams): void {
+    const fail = (msg: string): never => {
+      throw new Error(`placeOrder (${p.orderType}): ${msg}`)
+    }
+    const has = (v: unknown): boolean => v != null && String(v) !== ''
+    const qty = has(p.totalQuantity)
+    const cash = has(p.cashQty)
+    if (qty && cash) fail('totalQuantity and cashQty are mutually exclusive — provide exactly one.')
+    if (p.orderType === 'MKT') {
+      if (!qty && !cash) fail('requires totalQuantity (shares) or cashQty (notional).')
+    } else {
+      if (cash) fail('cashQty (notional) is only supported for MKT orders — use totalQuantity.')
+      if (!qty) fail('requires totalQuantity.')
+    }
+    switch (p.orderType) {
+      case 'LMT':
+        if (!has(p.lmtPrice)) fail('requires lmtPrice.')
+        break
+      case 'STP':
+        if (!has(p.auxPrice)) fail('requires auxPrice (stop trigger price).')
+        break
+      case 'STP LMT':
+        if (!has(p.auxPrice)) fail('requires auxPrice (stop trigger price).')
+        if (!has(p.lmtPrice)) fail('requires lmtPrice.')
+        break
+      case 'TRAIL':
+      case 'TRAIL LIMIT': {
+        const aux = has(p.auxPrice)
+        const pct = has(p.trailingPercent)
+        if (aux && pct) fail('auxPrice and trailingPercent are mutually exclusive — provide exactly one.')
+        if (!aux && !pct) fail('requires auxPrice (trailing offset) or trailingPercent.')
+        if (p.orderType === 'TRAIL LIMIT' && !has(p.lmtPrice)) fail('requires lmtPrice.')
+        break
+      }
+    }
+  }
+
   stagePlaceOrder(params: StagePlaceOrderParams): AddResult {
     this._assertWritable()
+    this._validatePlaceOrderParams(params)
     // Resolve aliceId → full contract via broker (fills secType, exchange, currency, conId, etc.)
     const contract = this.contractFromAliceId(params.aliceId)
     if (params.symbol) contract.symbol = params.symbol
@@ -866,6 +910,29 @@ export class UnifiedTradingAccount {
     return this._callBroker(() => this.broker.getMarketClock())
   }
 
+  /**
+   * Hub → leaves expansion (bond issuers, option chains, futures months).
+   * Loud-refuses when the broker has no hub semantics. Accepts a full
+   * aliceId; hub keys (issuer:…) are passed to the broker verbatim — they
+   * deliberately do NOT go through resolveNativeKey, which refuses them
+   * (directories are not tradeable contracts).
+   */
+  async expandContract(aliceId: string, filters?: ExpandContractFilters): Promise<ContractExpansion> {
+    if (typeof this.broker.expandContract !== 'function') {
+      throw new BrokerError('CONFIG', `Account "${this.label}" does not support contract expansion.`)
+    }
+    const parsed = UnifiedTradingAccount.parseAliceId(aliceId)
+    if (!parsed) {
+      throw new Error(`Invalid aliceId "${aliceId}" — expected format: accountId|nativeKey`)
+    }
+    if (parsed.utaId !== this.id) {
+      throw new Error(`aliceId "${aliceId}" belongs to UTA "${parsed.utaId}", not "${this.id}".`)
+    }
+    const result = await this._callBroker(() => this.broker.expandContract!(parsed.nativeKey, filters))
+    for (const c of result.contracts ?? []) this.stampAliceId(c)
+    return result
+  }
+
   async searchContracts(pattern: string): Promise<ContractDescription[]> {
     const results = await this._callBroker(() => this.broker.searchContracts(pattern))
     for (const desc of results) this.stampAliceId(desc.contract)
@@ -911,6 +978,13 @@ export class UnifiedTradingAccount {
       const value = src[key]
       if (key === 'aliceId') continue
       if (value === undefined || value === '' || value === null) continue
+      // Numeric defaults are defaults too: `new Contract()` sets conId=0 and
+      // sentinel numbers (UNSET_DOUBLE/UNSET_INTEGER) on numeric fields. A
+      // blanket copy clobbered the expanded conId back to 0 — the broker got
+      // an all-empty contract and TWS rejected with error 321 (the by-conId
+      // quote path was dead in production while direct broker calls worked).
+      // No numeric Contract field carries signal at 0 or at a sentinel.
+      if (typeof value === 'number' && (value === 0 || value === UNSET_INTEGER || value === UNSET_DOUBLE)) continue
       dst[key] = value
     }
     return expanded

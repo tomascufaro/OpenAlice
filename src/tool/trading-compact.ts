@@ -81,7 +81,9 @@ export function compactContract(c: unknown): AnyRec {
   pick(out, 'exchange', val(k['exchange']))
   pick(out, 'description', val(k['description']))
   pick(out, 'expiry', val(k['lastTradeDateOrContractMonth']))
-  pick(out, 'strike', val(k['strike']))
+  // strike 0 = "not an option" — carries no signal, drop like a sentinel
+  const strike = val(k['strike'])
+  if (strike && strike !== '0') out['strike'] = strike
   const right = val(k['right'])
   if (right === 'C' || right === 'CALL') out['right'] = 'C'
   else if (right === 'P' || right === 'PUT') out['right'] = 'P'
@@ -155,6 +157,12 @@ export function compactResult(r: unknown): AnyRec {
   pick(out, 'filledQty', val(k['filledQty']))
   pick(out, 'filledPrice', price(k['filledPrice']))
   pick(out, 'error', val(k['error']))
+  // Bracket TP/SL leg ids — the agent's only confirmation the protective
+  // legs exist (and the handle for cancelling them).
+  const legs = k['legs'] as Array<{ orderId?: unknown; kind?: unknown }> | undefined
+  if (Array.isArray(legs) && legs.length > 0) {
+    out['legs'] = legs.map((l) => ({ orderId: l.orderId, kind: l.kind }))
+  }
   const orderState = k['orderState'] as AnyRec | undefined
   const rejectReason = orderState ? val(orderState['rejectReason']) : undefined
   if (rejectReason) out['rejectReason'] = rejectReason

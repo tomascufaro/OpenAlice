@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Bootstrap a chat workspace: a bare git repo + README, nothing more.
 #
-# Context injection — the OpenAlice `.mcp.json`, Alice persona composed into
-# CLAUDE.md / AGENTS.md, and bundled skills — is done by the launcher AFTER
-# this script, gated by template.json flags (see context-injector.ts). The
+# Context injection — Alice persona composed into CLAUDE.md / AGENTS.md plus the
+# per-CLI skills (alice* / traderhub) — is done by the launcher AFTER this
+# script, gated by template.json flags (see context-injector.ts). The
 # launcher also makes the initial commit. This script just lays down the bare
 # workspace and inits git.
 #

@@ -19,6 +19,7 @@ import { UTADetailPage } from '../pages/UTADetailPage'
 import { DevPage } from '../pages/DevPage'
 import { InboxPage } from '../pages/InboxPage'
 import { TrackedPage } from '../pages/TrackedPage'
+import { ChatLandingPage } from '../pages/ChatLandingPage'
 import { WorkspaceListPage } from '../pages/WorkspaceListPage'
 import { WorkspacePage } from '../pages/WorkspacePage'
 import { TemplateCatalogPage } from '../pages/TemplateCatalogPage'
@@ -186,6 +187,13 @@ const trackedModule: ViewModule<'tracked'> = {
   Component: () => <TrackedPage />,
 }
 
+const chatLandingModule: ViewModule<'chat-landing'> = {
+  kind: 'chat-landing',
+  title: () => 'Ask Alice',
+  toUrl: () => '/chat',
+  Component: () => <ChatLandingPage />,
+}
+
 const workspaceListModule: ViewModule<'workspace-list'> = {
   kind: 'workspace-list',
   title: () => 'Workspaces',
@@ -250,6 +258,7 @@ export const VIEWS = {
   dev: devModule,
   inbox: inboxModule,
   tracked: trackedModule,
+  'chat-landing': chatLandingModule,
   'workspace-list': workspaceListModule,
   workspace: workspaceModule,
   'template-catalog': templateCatalogModule,
