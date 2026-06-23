@@ -19,6 +19,7 @@ const demoSession: SessionRecord = {
   agentSessionId: null,
   pid: 0,
   startedAt: Date.now(),
+  title: "What jumped out from Apple's Q1 earnings?",
 }
 
 export const demoWorkspace: Workspace = {
@@ -42,18 +43,63 @@ export const demoWorkspace: Workspace = {
 export const DEMO_CHAT_WORKSPACE_ID = 'demo-chat-ws'
 export const DEMO_CHAT_SESSION_ID = 'demo-chat-session'
 
-const demoChatSession: SessionRecord = {
-  id: DEMO_CHAT_SESSION_ID,
-  wsId: DEMO_CHAT_WORKSPACE_ID,
-  agent: 'claude',
-  name: 'c1',
-  createdAt: new Date().toISOString(),
-  lastActiveAt: new Date().toISOString(),
-  state: 'running',
-  agentSessionId: null,
-  pid: 0,
-  startedAt: Date.now(),
-}
+// A small spread of agents + states so the sidebar shows the full session
+// styling (per-agent badge colours for claude/codex/opencode/pi, the paused
+// treatment, and the hover pause/resume/delete icons).
+const demoChatSessions: SessionRecord[] = [
+  {
+    id: DEMO_CHAT_SESSION_ID,
+    wsId: DEMO_CHAT_WORKSPACE_ID,
+    agent: 'claude',
+    name: 'c1',
+    createdAt: new Date().toISOString(),
+    lastActiveAt: new Date().toISOString(),
+    state: 'running',
+    agentSessionId: null,
+    pid: 0,
+    startedAt: Date.now(),
+    title: "What's moving in semiconductors today?",
+  },
+  {
+    id: 'demo-chat-x1',
+    wsId: DEMO_CHAT_WORKSPACE_ID,
+    agent: 'codex',
+    name: 'x1',
+    createdAt: new Date().toISOString(),
+    lastActiveAt: new Date().toISOString(),
+    state: 'running',
+    agentSessionId: '019eb75e-0b1b-7fa2',
+    pid: 0,
+    startedAt: Date.now(),
+    title: 'Build a thesis on NVDA',
+  },
+  {
+    id: 'demo-chat-o1',
+    wsId: DEMO_CHAT_WORKSPACE_ID,
+    agent: 'opencode',
+    name: 'o1',
+    createdAt: new Date().toISOString(),
+    lastActiveAt: new Date().toISOString(),
+    state: 'paused',
+    agentSessionId: 'ses_148a17c1bffe',
+    pid: null,
+    startedAt: null,
+    title: 'Scan the EV supply chain for bottlenecks',
+  },
+  {
+    id: 'demo-chat-p1',
+    wsId: DEMO_CHAT_WORKSPACE_ID,
+    agent: 'pi',
+    name: 'p1',
+    createdAt: new Date().toISOString(),
+    lastActiveAt: new Date().toISOString(),
+    state: 'paused',
+    agentSessionId: '6850b4d0-1c2e',
+    pid: null,
+    startedAt: null,
+    title: '解释一下美债收益率曲线倒挂意味着什么',
+  },
+]
 
 export const demoChatWorkspace: Workspace = {
   id: DEMO_CHAT_WORKSPACE_ID,
@@ -64,8 +110,8 @@ export const demoChatWorkspace: Workspace = {
   spawnedFromVersion: '0.1.0',
   currentVersion: '0.1.0',
   upgradeAvailable: null,
-  agents: ['claude', 'codex'],
-  sessions: [demoChatSession],
+  agents: ['claude', 'codex', 'opencode', 'pi'],
+  sessions: demoChatSessions,
   agentOverride: { claude: false, codex: false, opencode: false, pi: false },
 }
 

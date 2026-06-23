@@ -11,7 +11,8 @@ import {
   type ClientControlMessage,
 } from './protocol';
 import { attachWebglRenderer } from './renderer';
-import { darkTheme } from './theme';
+import { darkTheme, lightTheme } from './theme';
+import { useEffectiveTheme } from '../../theme/useEffectiveTheme';
 // Lazy-import so the demo subtree (transcripts, fixtures, handlers) is
 // dynamic-imported only when demo mode is actually on. With a static import,
 // Rollup is conservative about module side-effects (the transcript file
@@ -21,7 +22,7 @@ const DemoTerminalReplay = lazy(() =>
   import('../../demo/DemoTerminalReplay').then((m) => ({ default: m.DemoTerminalReplay })),
 );
 
-type Status = 'connecting' | 'connected' | 'closed' | 'error' | 'kicked';
+type Status = 'connecting' | 'reconnecting' | 'connected' | 'closed' | 'error' | 'kicked';
 
 interface ExitInfo {
   readonly code: number;
@@ -99,6 +100,19 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
   const onSessionLostRef = useRef<TerminalViewProps['onSessionLost']>(props.onSessionLost);
   onSessionLostRef.current = props.onSessionLost;
 
+  // Terminal palette follows the app theme (auto resolves via the OS). Read the
+  // current value through a ref so the connect effect doesn't recreate the
+  // terminal on a theme flip — a separate effect re-skins the live instance.
+  const effectiveTheme = useEffectiveTheme();
+  const xtermTheme = effectiveTheme === 'light' ? lightTheme : darkTheme;
+  const themeRef = useRef(xtermTheme);
+  themeRef.current = xtermTheme;
+  const termRef = useRef<Xterm | null>(null);
+
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = xtermTheme;
+  }, [xtermTheme]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return undefined;
@@ -110,7 +124,7 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
     setChildExited(false);
 
     const term = new Xterm({
-      theme: darkTheme,
+      theme: themeRef.current,
       fontFamily:
         'ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", "DejaVu Sans Mono", monospace',
       fontSize: 13,
@@ -121,6 +135,7 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
       macOptionIsMeta: true,
       convertEol: false,
     });
+    termRef.current = term;
 
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -149,16 +164,24 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
       rows: String(lastRows),
     });
     const url = `${wsUrl ?? defaultWsUrl()}?${params.toString()}`;
-    const ws = new WebSocket(url);
-    ws.binaryType = 'arraybuffer';
+
+    // The live socket is swapped out on every (re)connect; senders read it at
+    // call time so xterm's stdin/binary subs survive a reconnect untouched.
+    let activeWs: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    let hasConnectedOnce = false;
+    let teardown = false;
 
     const sendControl = (msg: ClientControlMessage): void => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+      const ws = activeWs;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
     };
 
     const encoder = new TextEncoder();
     const sendStdin = (data: string): void => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
+      const ws = activeWs;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
     };
 
     term.attachCustomKeyEventHandler((event) => {
@@ -184,78 +207,128 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
     ro.observe(container);
     window.addEventListener('resize', handleResize);
 
-    ws.addEventListener('open', () => {
-      setStatus('connected');
-      term.focus();
-      handleResize();
-    });
+    // Backoff schedule for transient drops (vite ws-proxy ECONNRESET, server
+    // restart, sleep/wake). Cap the delay and the attempt count so a genuinely
+    // dead backend stops the loop instead of retrying forever.
+    const RECONNECT_BASE_MS = 500;
+    const RECONNECT_MAX_MS = 10_000;
+    const RECONNECT_MAX_ATTEMPTS = 12;
 
-    ws.addEventListener('message', (ev) => {
-      const data: unknown = ev.data;
-      if (typeof data === 'string') {
-        const msg = parseServerControl(data);
-        if (!msg) return;
-        switch (msg.type) {
-          case 'attached':
-            setPid(msg.pid);
-            setScrollbackTruncated(msg.scrollbackTruncated);
-            onAttachedRef.current?.(msg.sessionId);
-            break;
-          case 'cursor':
-            // No-op for now — see comment above on the URL `since` removal.
-            break;
-          case 'lifecycle':
-            if (msg.kind === 'child-exit') {
-              setChildExited(true);
-            } else if (msg.kind === 'child-respawn') {
-              setChildExited(false);
-            }
-            break;
-          case 'exit':
-            setExitInfo({ code: msg.code, signal: msg.signal });
-            break;
-        }
+    const scheduleReconnect = (): void => {
+      if (teardown) return;
+      if (attempts >= RECONNECT_MAX_ATTEMPTS) {
+        setStatus('closed');
         return;
       }
-      if (data instanceof ArrayBuffer) {
-        term.write(new Uint8Array(data));
-      }
-    });
+      attempts += 1;
+      setStatus('reconnecting');
+      const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempts - 1), RECONNECT_MAX_MS);
+      reconnectTimer = setTimeout(connect, delay);
+    };
 
-    ws.addEventListener('close', (ev) => {
-      // Server-side kick uses close code 4001 — separate from generic disconnect.
-      // 4404 = server doesn't know this session id (record paused or removed).
-      if (ev.code === 4001) {
-        setStatus('kicked');
-      } else if (ev.code === 4404) {
-        onSessionLostRef.current?.();
-        setStatus('closed');
-      } else {
-        setStatus('closed');
-      }
-    });
-    ws.addEventListener('error', () => setStatus('error'));
+    function connect(): void {
+      if (teardown) return;
+      const ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+      activeWs = ws;
+      setStatus(hasConnectedOnce ? 'reconnecting' : 'connecting');
+
+      ws.addEventListener('open', () => {
+        attempts = 0;
+        // A reconnect re-attaches to a live xterm that already shows the
+        // pre-drop screen, but the server cold-replays its full ring buffer on
+        // every attach. Reset first so the replay repaints cleanly instead of
+        // duplicating scrollback. (First connect: xterm is already blank.)
+        if (hasConnectedOnce) term.reset();
+        hasConnectedOnce = true;
+        setStatus('connected');
+        term.focus();
+        handleResize();
+      });
+
+      ws.addEventListener('message', (ev) => {
+        const data: unknown = ev.data;
+        if (typeof data === 'string') {
+          const msg = parseServerControl(data);
+          if (!msg) return;
+          switch (msg.type) {
+            case 'attached':
+              setPid(msg.pid);
+              setScrollbackTruncated(msg.scrollbackTruncated);
+              onAttachedRef.current?.(msg.sessionId);
+              break;
+            case 'cursor':
+              // No-op for now — see comment above on the URL `since` removal.
+              break;
+            case 'lifecycle':
+              if (msg.kind === 'child-exit') {
+                setChildExited(true);
+              } else if (msg.kind === 'child-respawn') {
+                setChildExited(false);
+              }
+              break;
+            case 'exit':
+              setExitInfo({ code: msg.code, signal: msg.signal });
+              break;
+          }
+          return;
+        }
+        if (data instanceof ArrayBuffer) {
+          term.write(new Uint8Array(data));
+        }
+      });
+
+      ws.addEventListener('close', (ev) => {
+        if (activeWs !== ws) return; // superseded by a newer socket
+        activeWs = null;
+        // Server-side kick uses close code 4001 — separate from generic
+        // disconnect. 4404 = server doesn't know this session id (record paused
+        // or removed). Neither should reconnect: 4001 means another client owns
+        // the session, 4404 means it's gone.
+        if (ev.code === 4001) {
+          setStatus('kicked');
+          return;
+        }
+        if (ev.code === 4404) {
+          onSessionLostRef.current?.();
+          setStatus('closed');
+          return;
+        }
+        if (teardown) return;
+        // Transient drop (ECONNRESET, abnormal 1006, …) — try to self-heal.
+        scheduleReconnect();
+      });
+      // 'error' is always followed by 'close'; let the close handler drive the
+      // reconnect so we don't double-schedule.
+      ws.addEventListener('error', () => {});
+    }
 
     const stdinSub = term.onData(sendStdin);
     const binarySub = term.onBinary((d) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
+      const ws = activeWs;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const bytes = new Uint8Array(d.length);
       for (let i = 0; i < d.length; i++) bytes[i] = d.charCodeAt(i) & 0xff;
       ws.send(bytes);
     });
 
+    connect();
+
     return () => {
+      teardown = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       stdinSub.dispose();
       binarySub.dispose();
       ro.disconnect();
       window.removeEventListener('resize', handleResize);
       try {
-        ws.close();
+        activeWs?.close();
       } catch {
         // ignore
       }
       webgl?.dispose();
       term.dispose();
+      termRef.current = null;
     };
   }, [wsId, sessionId, wsUrl]);
 
@@ -283,6 +356,7 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
 function StatusDot({ status }: { status: Status }): ReactElement {
   const colors: Record<Status, string> = {
     connecting: '#d29922',
+    reconnecting: '#d29922',
     connected: '#7ee787',
     closed: '#6e7681',
     error: '#ff7b72',
@@ -300,6 +374,20 @@ function StatusDot({ status }: { status: Status }): ReactElement {
 
 function defaultWsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  // Dev: connect straight to the backend port, bypassing the Vite proxy whose
+  // WS forwarding chokes on the terminal byte stream (read ECONNRESET) and adds
+  // a buffer+copy hop per frame. The backend's loopback auth passthrough admits
+  // the direct 127.0.0.1 connection, and the page's :5173 Origin is already in
+  // the backend allowlist (Guardian-injected) — see workspaces-ws.ts. Stripped
+  // from production builds (import.meta.env.DEV === false), so packaged /
+  // same-origin runs keep using location.host.
+  if (
+    import.meta.env.DEV &&
+    typeof __OPENALICE_DEV_BACKEND_PORT__ === 'number' &&
+    __OPENALICE_DEV_BACKEND_PORT__ > 0
+  ) {
+    return `${proto}//${window.location.hostname}:${__OPENALICE_DEV_BACKEND_PORT__}/api/workspaces/pty`;
+  }
   return `${proto}//${window.location.host}/api/workspaces/pty`;
 }
 

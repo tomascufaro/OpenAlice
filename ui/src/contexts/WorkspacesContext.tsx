@@ -25,8 +25,11 @@ import {
   type ReactNode,
 } from 'react'
 
+import { useTranslation } from 'react-i18next'
+
 import '../components/workspace/workspaces.css'
 
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { WorkspaceAIConfigModal } from '../components/workspace/WorkspaceAIConfigModal'
 import {
   deleteSession as apiDeleteSession,
@@ -65,10 +68,15 @@ interface WorkspacesContextValue {
    * session seeded with `prompt`, and focus into its terminal tab. Rejects on
    * failure so the composer can surface it.
    */
-  quickChat(prompt: string, agent?: string): Promise<void>
+  quickChat(prompt: string, agent?: string, credentialSlug?: string): Promise<void>
   pauseSession(wsId: string, sessionId: string): Promise<void>
   resumeSession(wsId: string, sessionId: string): Promise<void>
-  deleteSession(wsId: string, sessionId: string): Promise<void>
+  /**
+   * Request session deletion — opens a confirm dialog (delete is destructive
+   * and the row's × sits right next to the open-conversation hit area, so a
+   * misclick shouldn't nuke a session). The actual delete runs on confirm.
+   */
+  requestDeleteSession(wsId: string, sessionId: string): void
   /** Open the per-workspace AI-provider config modal for `wsId`. */
   openAgentConfig(wsId: string): void
 }
@@ -90,6 +98,8 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
   // button share one modal instance — and the modal survives activity
   // switches (rendered here, not inside an activity-scoped component).
   const [configuringWsId, setConfiguringWsId] = useState<string | null>(null)
+  const [pendingSessionDelete, setPendingSessionDelete] = useState<{ wsId: string; sessionId: string } | null>(null)
+  const { t } = useTranslation()
 
   const openOrFocus = useWorkspace((s) => s.openOrFocus)
   const closeTab = useWorkspace((s) => s.closeTab)
@@ -129,10 +139,10 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
     }
     const tabsSnap = useWorkspace.getState().tabs
     for (const tabId of Object.keys(tabsSnap)) {
-      const t = tabsSnap[tabId]
-      if (!t || t.spec.kind !== 'workspace') continue
-      const wsId = t.spec.params.wsId
-      const sid = t.spec.params.sessionId
+      const tab = tabsSnap[tabId]
+      if (!tab || tab.spec.kind !== 'workspace') continue
+      const wsId = tab.spec.params.wsId
+      const sid = tab.spec.params.sessionId
       if (!validW.has(wsId)) {
         closeTab(tabId)
         continue
@@ -159,6 +169,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
           agentSessionId: sess.agentSessionId,
           pid: sess.pid,
           startedAt: sess.startedAt,
+          title: sess.title,
         }
         setWorkspaces((prev) =>
           prev.map((w) =>
@@ -175,8 +186,8 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
   )
 
   const quickChat = useCallback(
-    async (prompt: string, agent?: string): Promise<void> => {
-      const { workspace, session } = await apiQuickChat(prompt, agent)
+    async (prompt: string, agent?: string, credentialSlug?: string): Promise<void> => {
+      const { workspace, session } = await apiQuickChat(prompt, agent, credentialSlug)
       const nowIso = new Date().toISOString()
       const newRecord: SessionRecord = {
         id: session.sessionId,
@@ -189,6 +200,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
         agentSessionId: session.agentSessionId,
         pid: session.pid,
         startedAt: session.startedAt,
+        title: session.title,
       }
       // Upsert so the terminal slot mounts immediately (before the 3s poll):
       // append to the reused workspace, or insert the just-created one. The
@@ -260,8 +272,8 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
       // reconcile effect — gives instant UI feedback).
       const tabsSnap = useWorkspace.getState().tabs
       for (const tabId of Object.keys(tabsSnap)) {
-        const t = tabsSnap[tabId]
-        if (t && t.spec.kind === 'workspace' && t.spec.params.sessionId === sessionId) {
+        const tab = tabsSnap[tabId]
+        if (tab && tab.spec.kind === 'workspace' && tab.spec.params.sessionId === sessionId) {
           closeTab(tabId)
         }
       }
@@ -270,6 +282,19 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
     },
     [refresh, closeTab],
   )
+
+  // Public delete = confirm first (the × sits next to the open-conversation hit
+  // area; a misclick shouldn't nuke a session). The provider owns the dialog.
+  const requestDeleteSession = useCallback((wsId: string, sessionId: string): void => {
+    setPendingSessionDelete({ wsId, sessionId })
+  }, [])
+
+  const pendingDeleteSession = pendingSessionDelete
+    ? (workspaces.find((w) => w.id === pendingSessionDelete.wsId)?.sessions
+        .find((s) => s.id === pendingSessionDelete.sessionId) ?? null)
+    : null
+  const pendingDeleteLabel =
+    pendingDeleteSession?.title?.trim() || pendingDeleteSession?.name || ''
 
   return (
     <WorkspacesContext.Provider
@@ -283,7 +308,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
         quickChat,
         pauseSession,
         resumeSession,
-        deleteSession,
+        requestDeleteSession,
         openAgentConfig: (wsId: string) => setConfiguringWsId(wsId),
       }}
     >
@@ -292,6 +317,20 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
         <WorkspaceAIConfigModal
           wsId={configuringWsId}
           onClose={() => setConfiguringWsId(null)}
+        />
+      )}
+      {pendingSessionDelete !== null && (
+        <ConfirmDialog
+          title={t('chat.deleteSessionTitle')}
+          message={t('chat.deleteSessionMessage', {
+            title: pendingDeleteLabel || pendingSessionDelete.sessionId,
+          })}
+          confirmLabel={t('common.delete')}
+          onConfirm={async () => {
+            await deleteSession(pendingSessionDelete.wsId, pendingSessionDelete.sessionId)
+            setPendingSessionDelete(null)
+          }}
+          onClose={() => setPendingSessionDelete(null)}
         />
       )}
     </WorkspacesContext.Provider>

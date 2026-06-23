@@ -305,7 +305,10 @@ export class PersistentSession {
     }
 
     this.ws = ws;
-    this.paused = false;
+    // A previous client may have dropped mid-backpressure, leaving the PTY
+    // paused at the OS level. Clearing only the flag (not resuming the term)
+    // would strand it paused forever; resumePty() un-sticks both.
+    this.resumePty();
     this.resize(cols, rows);
 
     // Compute replay window. Cold attach (since=undefined) replays the full
@@ -351,6 +354,12 @@ export class PersistentSession {
     const ws = this.ws;
     this.ws = null;
     this.unwireWs(ws);
+    // No consumer left — let the PTY run free into the in-memory ring buffer
+    // (onPtyData appends regardless of socket). If the socket dropped while
+    // we were backpressure-paused, NOT resuming here strands the PTY paused
+    // forever and the agent blocks on its next stdout write — the "running
+    // along and then freezes" symptom.
+    this.resumePty();
     if (this.cursorTimer) {
       clearInterval(this.cursorTimer);
       this.cursorTimer = null;
@@ -422,6 +431,19 @@ export class PersistentSession {
 
     if (this.buffer.tailSeq - this.lastCursorSeq >= CURSOR_BYTES_INTERVAL) {
       this.maybeSendCursor();
+    }
+  }
+
+  /** Un-pause the PTY read stream if backpressure paused it. Safe to call when
+   *  already running. Keeping the `paused` flag and the term stream in lockstep
+   *  is the whole point — clearing one without the other deadlocks the PTY. */
+  private resumePty(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    try {
+      this.term.resume();
+    } catch {
+      // PTY may be dying; ignore.
     }
   }
 

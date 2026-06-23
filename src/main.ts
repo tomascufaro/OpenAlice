@@ -37,6 +37,8 @@ import { createInboxStore } from './core/inbox-store.js'
 import { ToolCenter } from './core/tool-center.js'
 import { WorkspaceToolCenter } from './core/workspace-tool-center.js'
 import { inboxPushFactory } from './tool/inbox-push.js'
+import { inboxReadFactory } from './tool/inbox-read.js'
+import { workspacePathFactory } from './tool/workspace-path.js'
 import { createEntityStore } from './core/entity-store.js'
 import { entityUpsertFactory } from './tool/entity-upsert.js'
 import { entitySearchFactory } from './tool/entity-search.js'
@@ -44,7 +46,6 @@ import { createEventLog } from './core/event-log.js'
 import { createToolCallLog } from './core/tool-call-log.js'
 import { createListenerRegistry } from './core/listener-registry.js'
 import { createEventBus } from './core/event-bus.js'
-import { createCronEngine, createCronListener, createCronTools } from './task/cron/index.js'
 import { createMetricsListener } from './task/metrics/index.js'
 import { NewsCollectorStore, NewsCollector } from './domain/news/index.js'
 import { createNewsArchiveTools } from './tool/news.js'
@@ -81,7 +82,7 @@ async function main() {
   const toolCallLog = await createToolCallLog()
 
   // ==================== Listener Registry ====================
-  // Created early so CronEngine and other producers can declare against it.
+  // Created early so producers can declare against it.
 
   const listenerRegistry = createListenerRegistry(eventLog)
 
@@ -93,6 +94,8 @@ async function main() {
 
   const workspaceToolCenter = new WorkspaceToolCenter()
   workspaceToolCenter.register(inboxPushFactory)
+  workspaceToolCenter.register(inboxReadFactory)
+  workspaceToolCenter.register(workspacePathFactory)
   workspaceToolCenter.register(entityUpsertFactory)
   workspaceToolCenter.register(entitySearchFactory)
 
@@ -120,10 +123,6 @@ async function main() {
   // The persona file is seeded on first run so the user has an editable
   // override (consumed by the workspace context-injector).
   await readWithDefault(PERSONA_FILE, PERSONA_DEFAULT)
-
-  // ==================== Cron ====================
-
-  const cronEngine = createCronEngine({ registry: listenerRegistry })
 
   // ==================== News Collector Store ====================
 
@@ -207,7 +206,6 @@ async function main() {
     'trading',
   )
 
-  toolCenter.register(createCronTools(cronEngine), 'cron')
   toolCenter.register(createMarketSearchTools(marketSearch), 'market-search')
   toolCenter.register(createReferenceBoardTools(reference), 'market-board')
   toolCenter.register(createEquityTools(equityClient), 'equity')
@@ -248,11 +246,6 @@ async function main() {
   // skip (see cron listener). Created here so cron dispatch can hold it.
   const workspaceServiceRef = createWorkspaceServiceRef()
 
-  // Cron fires now dispatch a headless Workspace run (job → workspace+agent),
-  // not the legacy in-process AgentWork path.
-  const cronListener = createCronListener({ registry: listenerRegistry, workspaceServiceRef })
-  await cronListener.start()
-
   // Snapshot scheduler lives in UTA after Step 6 — Alice no longer
   // drives the periodic equity-curve writes. The UTA service starts
   // its own scheduler at boot.
@@ -262,12 +255,10 @@ async function main() {
   const metricsListener = createMetricsListener({ registry: listenerRegistry })
   await metricsListener.start()
 
-  // ==================== Activate Listeners + Start Cron Engine ====================
+  // ==================== Activate Listeners ====================
 
   await listenerRegistry.start()
-  await cronEngine.start()
   console.log(`listener-registry: started (${listenerRegistry.list().length} listeners)`)
-  console.log('cron: engine started')
 
   // ==================== News Collector ====================
 
@@ -322,7 +313,7 @@ async function main() {
   // ==================== Engine Context ====================
 
   const ctx: EngineContext = {
-    config, inboxStore, entityStore, eventLog, toolCallLog, cronEngine, toolCenter,
+    config, inboxStore, entityStore, eventLog, toolCallLog, toolCenter,
     listenerRegistry,
     fire: createEventBus(eventLog),
     bbEngine: getSDKExecutor(),
@@ -351,8 +342,6 @@ async function main() {
     stopped = true
     newsCollector?.stop()
     metricsListener.stop()
-    cronListener.stop()
-    cronEngine.stop()
     await listenerRegistry.stop()
     for (const plugin of [...corePlugins, ...optionalPlugins.values()]) {
       await plugin.stop()

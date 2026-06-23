@@ -44,7 +44,7 @@ export function WorkspacesSidebar() {
         onSpawn={(wsId, opts?: SpawnOpts) => void ctx.spawn(wsId, opts)}
         onPauseSession={(wsId, id) => void ctx.pauseSession(wsId, id)}
         onResumeSession={(wsId, id) => void ctx.resumeSession(wsId, id)}
-        onDeleteSession={(wsId, id) => void ctx.deleteSession(wsId, id)}
+        onDeleteSession={(wsId, id) => ctx.requestDeleteSession(wsId, id)}
         onChanged={() => void ctx.refresh()}
         onConfigureWorkspace={(wsId) => ctx.openAgentConfig(wsId)}
         onOpenOverview={() => openOrFocus({ kind: 'workspace-list', params: {} })}

@@ -33,6 +33,13 @@ export interface SessionRecord {
   state: 'running' | 'paused';
   resumeHint?: { kind: 'agent-session-id'; value: string };
   scrollbackFile?: string;
+  /**
+   * The user's first message, captured when the session is seeded (quick-chat).
+   * Surfaced as a human-readable title in the chat sidebar instead of the sticky
+   * `c1` name. Only present for seeded sessions; absent ones fall back to `name`.
+   * Stored capped — we don't need the whole prompt for a one-line title.
+   */
+  readonly title?: string;
 }
 
 interface FileShape {
@@ -285,6 +292,10 @@ function validateFile(value: unknown): SessionRecord[] {
       createdAt: r['createdAt'],
       lastActiveAt: r['lastActiveAt'],
       state: r['state'],
+      // Carry the session title (the captured first message) across reloads —
+      // it's written to disk by `flush`, so it must be read back here too, or
+      // every server restart / registry reload reverts the row to the `c1` name.
+      ...(typeof r['title'] === 'string' ? { title: r['title'] } : {}),
     };
     const hint = r['resumeHint'];
     if (

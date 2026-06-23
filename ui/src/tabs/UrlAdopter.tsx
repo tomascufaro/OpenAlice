@@ -26,8 +26,10 @@ export function UrlAdopter() {
   return (
     <>
       <Routes>
-        {/* Root → Inbox (the workspace-anchored landing). */}
-        <Route path="/" element={<Navigate to="/inbox" replace />} />
+        {/* Root → Ask Alice. An AI product should open on how-to-use-it (the
+            chat front door), not an information summary (Inbox is task sync, à
+            la Linear — but Linear's comms live in Slack; ours live here). */}
+        <Route path="/" element={<Navigate to="/chat" replace />} />
 
         {/* Activities */}
         {/* /chat → the "Ask Alice" quick-chat landing (composer). Legacy
@@ -36,7 +38,7 @@ export function UrlAdopter() {
         <Route path="/chat" element={<AdoptStatic spec={{ kind: 'chat-landing', params: {} }} />} />
         <Route path="/chat/:channelId" element={<Navigate to="/inbox" replace />} />
         <Route path="/portfolio" element={<AdoptStatic spec={{ kind: 'portfolio', params: {} }} />} />
-        <Route path="/automation" element={<Navigate to="/automation/flow" replace />} />
+        <Route path="/automation" element={<Navigate to="/automation/schedules" replace />} />
         <Route path="/automation/:section" element={<AdoptAutomation />} />
         <Route path="/news" element={<AdoptStatic spec={{ kind: 'news', params: {} }} />} />
         <Route path="/market" element={<AdoptStatic spec={{ kind: 'market-list', params: {} }} />} />
@@ -88,7 +90,7 @@ export function UrlAdopter() {
         <Route path="/logs" element={<Navigate to="/dev/logs" replace />} />
         <Route path="/events" element={<Navigate to="/dev/logs" replace />} />
         <Route path="/agent-status" element={<Navigate to="/dev/logs" replace />} />
-        <Route path="/scheduler" element={<Navigate to="/automation/cron" replace />} />
+        <Route path="/scheduler" element={<Navigate to="/automation/schedules" replace />} />
         <Route path="/ai-provider" element={<Navigate to="/settings/ai-provider" replace />} />
         <Route path="/trading" element={<Navigate to="/settings/trading" replace />} />
         <Route path="/trading-accounts" element={<Navigate to="/settings/trading" replace />} />
@@ -174,8 +176,8 @@ function AdoptDev() {
 
 function AdoptAutomation() {
   const { section } = useParams<{ section: string }>()
-  const valid: ReadonlyArray<string> = ['flow', 'cron', 'webhook']
-  if (!section || !valid.includes(section)) return <Navigate to="/automation/flow" replace />
+  const valid: ReadonlyArray<string> = ['schedules', 'runs', 'api', 'flow', 'webhook']
+  if (!section || !valid.includes(section)) return <Navigate to="/automation/schedules" replace />
   return (
     <AdoptStatic
       spec={{

@@ -84,6 +84,7 @@ export function attachWorkspacesWS(httpServer: HttpServer, svc: WorkspaceService
     if (!isOriginAllowed(req, svc)) {
       launcherLogger.warn('upgrade.origin_rejected', {
         origin: req.headers.origin ?? null,
+        host: req.headers.host ?? null,
         remoteAddress: req.socket.remoteAddress ?? null,
       });
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
@@ -139,6 +140,12 @@ export function attachWorkspacesWS(httpServer: HttpServer, svc: WorkspaceService
       rows,
       since: since ?? null,
       origin: req.headers.origin ?? null,
+      // Host the browser actually connected to. Discriminates the dev
+      // transport: `localhost:<backendPort>` = direct (proxy bypassed),
+      // `localhost:5173` = forwarded through the Vite dev proxy (which
+      // preserves the inbound Host). origin stays 5173 either way, so host is
+      // the only field that tells them apart.
+      host: req.headers.host ?? null,
       remoteAddress: req.socket.remoteAddress ?? null,
     });
     try {

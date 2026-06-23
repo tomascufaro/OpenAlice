@@ -1,0 +1,48 @@
+# Contributors
+
+OpenAlice is built and maintained in-house, and we **don't merge external pull
+requests** — anything that touches trading or keys has to be ours (see
+[CONTRIBUTING.md](./CONTRIBUTING.md) for why). But the project stays open, and
+the community's **ideas, bug reports, designs, and reviews genuinely shape it**.
+This page is the record of those people, and of what each one helped move.
+
+## How recognition works
+
+- We don't merge your code, but if your **idea / report / design / review**
+  shaped a change, you get credited here, with a link to the actual change you
+  influenced. It's a real record, not just a name on a wall.
+- **Credit types:**
+  🤔 ideas · 🎨 design · 🐛 bug report · 👀 review · 💬 question answered ·
+  📖 docs · 🛡️ security · 🌍 translation · 💻 code _(rare — reimplemented with
+  your consent)_
+- **How to earn one:** open an
+  [issue](https://github.com/TraderAlice/OpenAlice/issues) with an idea, a
+  report, or a design. If it lands in the project, we add you. Think we missed
+  crediting you? Say so in an issue or on Discord — we'll fix it.
+- **Standouts (⭐):** a few people go notably above and beyond — high-signal,
+  consistent, often right. They sit at the top.
+
+## The roll
+
+<!--
+  Maintainer note — adding someone:
+    • Put standouts (⭐) first; everyone else below, newest-ish at the bottom.
+    • The avatar comes free from  https://github.com/<handle>.png  — no token.
+    • Link each "Shaped" item to the PR / commit / issue it influenced.
+    • Pick credit emoji from the list above; honesty over generosity isn't the
+      goal here — credit them for what they actually moved.
+
+  Row template (copy this):
+
+  | ⭐ | <a href="https://github.com/HANDLE"><img src="https://github.com/HANDLE.png" width="40" height="40" alt="@HANDLE" /></a><br>[@HANDLE](https://github.com/HANDLE) | 🤔 🎨 | [what they shaped](LINK) |
+-->
+
+| | Contributor | Credits | Shaped |
+|:--:|---|:--:|---|
+| | <a href="https://github.com/2233admin"><img src="https://github.com/2233admin.png" width="40" height="40" alt="@2233admin" /></a><br>[@2233admin](https://github.com/2233admin) | 🎨 | [Linear dark-shell design pass — palette & navigation density re-traced into the app](https://github.com/TraderAlice/OpenAlice/pull/302) |
+| | <a href="https://github.com/lvysssss"><img src="https://github.com/lvysssss.png" width="40" height="40" alt="@lvysssss" /></a><br>[@lvysssss](https://github.com/lvysssss) | 🐛 🤔 | [Windows workspace-launch blockers — diagnosed the bootstrap path/bash failures and the extensionless CLI-shim file-association dialog, with verified repros](https://github.com/TraderAlice/OpenAlice/issues/364) |
+
+---
+
+_This is the credits list (`CONTRIBUTORS`), not the contribution guide. For the
+rules — what we accept and why — see [`CONTRIBUTING.md`](./CONTRIBUTING.md)._
