@@ -44,6 +44,13 @@ export const zhHant: Resources = {
       title: '語言',
       description: '介面語言，立即生效。',
     },
+    appearance: {
+      title: '外觀',
+      description: '版面與介面偏好，僅儲存在本機。',
+      showEditorTabs: '顯示編輯器分頁',
+      showEditorTabsOn: '編輯器上方顯示分頁列 —— 點擊切換，× 或中鍵關閉。',
+      showEditorTabsOff: '分頁列已隱藏。從側欄導覽；想要 VS Code 式分頁就開啟它。',
+    },
     category: {
       general: '一般',
       aiProvider: 'AI 供應商',
@@ -104,6 +111,7 @@ export const zhHant: Resources = {
   },
   chat: {
     newChat: '新對話',
+    newSession: '在此對話中新建工作階段',
     newWorkspace: '新增工作區',
     moreOptions: '更多選項',
     today: '今天',
@@ -120,6 +128,9 @@ export const zhHant: Resources = {
   chatLanding: {
     heading: '今天想研究什麼？',
     subheading: '讓 Alice 幫你研究、分析或交易——行情資料與工具都已就緒。',
+    targetHeading: '在此 workspace 中新建工作階段',
+    targetSub: '這段對話將在 {{tag}} 內建立——選個執行階段直接送出。',
+    clearTarget: '改為新對話',
     placeholder: '問 Alice…',
     workspaceType: '對話',
     defaultAgent: '預設',
@@ -282,6 +293,8 @@ export const zhHant: Resources = {
   tracked: {
     nothingTrackedYet: '尚未追蹤任何項目。',
     backlinksTooltip: '{{count}} 則筆記連結到此',
+    assets: '標的',
+    topics: '主題',
     pageDescription: '{{count}} 個追蹤 · 資產與主題',
     selectFromSidebar: '從側欄選擇一個實體。',
     referencedIn_one: '被 {{count}} 則筆記引用',
@@ -297,6 +310,12 @@ export const zhHant: Resources = {
     pageDescription: '共 {{count}} 則 · 工作區狀態更新',
     selectFromSidebar: '從側欄選擇一則。',
     commentsSection: '評論',
+    documentsSection: '文件',
+    docExpand: '展開',
+    docCollapse: '收合',
+    docNoPreview: '暫無預覽 —— 展開檢視。',
+    viewTime: '時間 —— 最新在前',
+    viewWorkspace: '依工作區分組',
     workspaceNotExists: '工作區已不存在',
     replyInWorkspace: '在 {{label}} 中回覆…',
     cannotReplyWorkspaceGone: '工作區已不存在——無處回覆。',

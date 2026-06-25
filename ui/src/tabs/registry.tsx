@@ -190,9 +190,13 @@ const trackedModule: ViewModule<'tracked'> = {
 
 const chatLandingModule: ViewModule<'chat-landing'> = {
   kind: 'chat-landing',
-  title: () => 'Ask Alice',
+  title: (spec, ctx) => {
+    if (!spec.params.targetWsId) return 'Ask Alice'
+    const tag = ctx.workspaces?.find((w) => w.id === spec.params.targetWsId)?.tag
+    return tag ? `New session · ${tag}` : 'New session'
+  },
   toUrl: () => '/chat',
-  Component: () => <ChatLandingPage />,
+  Component: ({ spec }) => <ChatLandingPage spec={spec} />,
 }
 
 const workspaceListModule: ViewModule<'workspace-list'> = {

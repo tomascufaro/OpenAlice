@@ -47,6 +47,13 @@ export const en = {
       title: 'Language',
       description: 'Interface language. Takes effect immediately.',
     },
+    appearance: {
+      title: 'Appearance',
+      description: 'Layout and chrome preferences. Stored locally on this device.',
+      showEditorTabs: 'Show editor tabs',
+      showEditorTabsOn: 'The tab strip above the editor is shown — click to switch, × or middle-click to close.',
+      showEditorTabsOff: 'The tab strip is hidden. Navigate from the sidebar; turn this on for VS Code-style tabs.',
+    },
     category: {
       general: 'General',
       aiProvider: 'AI Provider',
@@ -107,6 +114,7 @@ export const en = {
   },
   chat: {
     newChat: 'New chat',
+    newSession: 'New session in this chat',
     newWorkspace: 'New workspace',
     moreOptions: 'More options',
     today: 'Today',
@@ -123,6 +131,9 @@ export const en = {
   chatLanding: {
     heading: 'What do you want to look into?',
     subheading: 'Ask Alice to research, analyze, or trade — your market data and tools are on tap.',
+    targetHeading: 'New session in this workspace',
+    targetSub: 'This conversation starts inside {{tag}} — pick a runtime and send.',
+    clearTarget: 'New chat instead',
     placeholder: 'Ask Alice…',
     workspaceType: 'Chat',
     defaultAgent: 'Default',
@@ -285,6 +296,8 @@ export const en = {
   tracked: {
     nothingTrackedYet: 'Nothing tracked yet.',
     backlinksTooltip: '{{count}} notes link here',
+    assets: 'Assets',
+    topics: 'Topics',
     pageDescription: '{{count}} tracked · assets & topics',
     selectFromSidebar: 'Select an entity from the sidebar.',
     referencedIn_one: 'Referenced in {{count}} note',
@@ -300,6 +313,12 @@ export const en = {
     pageDescription: '{{count}} total · workspace status updates',
     selectFromSidebar: 'Select an entry from the sidebar.',
     commentsSection: 'Comments',
+    documentsSection: 'Documents',
+    docExpand: 'Expand',
+    docCollapse: 'Collapse',
+    docNoPreview: 'No preview available — expand to view.',
+    viewTime: 'Time — newest first',
+    viewWorkspace: 'Group by workspace',
     workspaceNotExists: 'Workspace no longer exists',
     replyInWorkspace: 'Reply in {{label}}…',
     cannotReplyWorkspaceGone: 'Workspace no longer exists — nowhere to reply.',

@@ -24,7 +24,7 @@ const openaiKey: Credential = {
   vendor: 'openai', authType: 'api-key', apiKey: 'sk-oa', wires: { 'openai-chat': '' },
 };
 
-function build() {
+function build(opts: { workspaces?: any[] } = {}) {
   const META = { id: 'ws-1', dir: '/w', agents: ['claude', 'opencode'], template: 'chat', tag: 'chat-x' };
   const opencode = {
     id: 'opencode',
@@ -37,9 +37,12 @@ function build() {
   const spawn = vi.fn(() => ({
     recordId: 'rec-1', wsId: 'ws-1', name: 'o1', pid: 1, agentSessionId: null, startedAt: 1,
   }));
+  const creator = { create: vi.fn(async () => ({ ok: true, workspace: META })) };
   const svc = {
-    registry: { list: () => [] }, // → creator.create path (bypasses tag matching)
-    creator: { create: vi.fn(async () => ({ ok: true, workspace: META })) },
+    // Default []: today's tag never matches → creator.create path. Tests that
+    // exercise targetWsId pass the workspace in so registry resolves it by id.
+    registry: { list: () => opts.workspaces ?? [] },
+    creator,
     resolveAdapter: (_m: any, agentId?: string) => adapters[agentId ?? 'claude'] ?? claude,
     adapters: { get: (id: string) => adapters[id] },
     sessionRegistry: {
@@ -52,7 +55,7 @@ function build() {
     publicMeta: vi.fn(async () => META),
     config: { launcherRepoRoot: '/repo' },
   } as unknown as WorkspaceService;
-  return { app: createWorkspaceRoutes(svc), opencode, spawn };
+  return { app: createWorkspaceRoutes(svc), opencode, spawn, creator };
 }
 
 async function quickChat(app: any, body: unknown) {
@@ -114,5 +117,27 @@ describe('POST /quick-chat — loginless credential injection', () => {
     expect(r.status).toBe(201);
     expect(vi.mocked(readCredentials)).not.toHaveBeenCalled();
     expect(spawn).toHaveBeenCalledOnce();
+  });
+
+  // targetWsId — the chat sidebar's per-workspace "+": spawn INTO the given
+  // workspace, not today's (so no creator.create).
+  it('targetWsId spawns into the given workspace, skipping find-or-create', async () => {
+    const { app, spawn, creator } = build({
+      workspaces: [{ id: 'ws-1', dir: '/w', agents: ['claude'], template: 'chat', tag: 'chat-x' }],
+    });
+    const r = await quickChat(app, { prompt: 'hi', agent: 'claude', targetWsId: 'ws-1' });
+    expect(r.status).toBe(201);
+    expect(creator.create).not.toHaveBeenCalled(); // reused, not created
+    expect(spawn).toHaveBeenCalledOnce();
+    expect((spawn.mock.calls[0] as any[])[0]).toBe('ws-1'); // spawned into the target
+  });
+
+  it('unknown targetWsId → 404 workspace_not_found, no spawn', async () => {
+    const { app, spawn, creator } = build();
+    const r = await quickChat(app, { prompt: 'hi', targetWsId: 'nope' });
+    expect(r.status).toBe(404);
+    expect(r.body.error).toBe('workspace_not_found');
+    expect(creator.create).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
 });

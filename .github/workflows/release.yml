@@ -55,12 +55,17 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         id: notes
         run: |
-          # Generate notes for this version only (since last tag)
+          # Generate notes for this version only (since last tag).
+          # --tag labels the about-to-be-created version: git-cliff runs
+          # BEFORE the tag exists (it's created in the next step), so without
+          # this the section header falls back to "[Unreleased]" instead of
+          # the version. See cliff.toml's `{% if version %}` template.
+          TAG="${{ steps.version.outputs.tag }}"
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           if [ -z "$LAST_TAG" ]; then
-            git-cliff --output notes.md
+            git-cliff --tag "$TAG" --output notes.md
           else
-            git-cliff "$LAST_TAG"..HEAD --output notes.md
+            git-cliff "$LAST_TAG"..HEAD --tag "$TAG" --output notes.md
           fi
 
       - name: Create tag and GitHub Release

@@ -36,6 +36,13 @@ export const ja: Resources = {
       title: '言語',
       description: 'インターフェースの言語。すぐに反映されます。',
     },
+    appearance: {
+      title: '外観',
+      description: 'レイアウトと UI の設定。この端末にのみ保存されます。',
+      showEditorTabs: 'エディタタブを表示',
+      showEditorTabsOn: 'エディタ上部にタブバーを表示 —— クリックで切替、× または中クリックで閉じる。',
+      showEditorTabsOff: 'タブバーは非表示。サイドバーから移動します。VS Code 風のタブが欲しい場合はオンに。',
+    },
     category: {
       general: '一般',
       aiProvider: 'AI プロバイダー',
@@ -96,6 +103,7 @@ export const ja: Resources = {
   },
   chat: {
     newChat: '新しいチャット',
+    newSession: 'このチャットで新規セッション',
     newWorkspace: '新しいワークスペース',
     moreOptions: 'その他のオプション',
     today: '今日',
@@ -112,6 +120,9 @@ export const ja: Resources = {
   chatLanding: {
     heading: '今日は何を調べますか？',
     subheading: 'Alice にリサーチ・分析・取引を依頼できます——マーケットデータとツールはすぐ使えます。',
+    targetHeading: 'このワークスペースで新規セッション',
+    targetSub: 'この会話は {{tag}} 内に作成されます——ランタイムを選んで送信してください。',
+    clearTarget: '通常の新規チャットに切替',
     placeholder: 'Alice に質問…',
     workspaceType: 'チャット',
     defaultAgent: 'デフォルト',
@@ -274,6 +285,8 @@ export const ja: Resources = {
   tracked: {
     nothingTrackedYet: 'まだ何もトラッキングしていません。',
     backlinksTooltip: '{{count}} 件のメモがここにリンク',
+    assets: '銘柄',
+    topics: 'トピック',
     pageDescription: '{{count}} 件トラッキング中 · 銘柄とトピック',
     selectFromSidebar: 'サイドバーからエンティティを選択してください。',
     referencedIn_one: '{{count}} 件のメモで参照',
@@ -289,6 +302,12 @@ export const ja: Resources = {
     pageDescription: '合計 {{count}} 件 · ワークスペースの状態更新',
     selectFromSidebar: 'サイドバーから項目を選択してください。',
     commentsSection: 'コメント',
+    documentsSection: 'ドキュメント',
+    docExpand: '展開',
+    docCollapse: '折りたたむ',
+    docNoPreview: 'プレビューなし —— 展開して表示。',
+    viewTime: '時系列 —— 新しい順',
+    viewWorkspace: 'ワークスペース別',
     workspaceNotExists: 'ワークスペースは存在しません',
     replyInWorkspace: '{{label}} で返信…',
     cannotReplyWorkspaceGone: 'ワークスペースが存在しないため、返信先がありません。',

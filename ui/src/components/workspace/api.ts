@@ -282,10 +282,12 @@ export async function quickChat(
   prompt: string,
   agent?: string,
   credentialSlug?: string,
+  targetWsId?: string,
 ): Promise<QuickChatResult> {
   const body: Record<string, unknown> = { prompt };
   if (agent !== undefined) body['agent'] = agent;
   if (credentialSlug !== undefined) body['credentialSlug'] = credentialSlug;
+  if (targetWsId !== undefined) body['targetWsId'] = targetWsId;
   const res = await fetch('/api/workspaces/quick-chat', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

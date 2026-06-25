@@ -149,6 +149,7 @@ describe('searchBarSources — federated candidates', () => {
       barId: 'yfinance|AAPL', source: 'vendor', sourceId: 'yfinance', symbol: 'AAPL', assetClass: 'equity',
     })
     expect(out[0].label).toContain('AAPL')
+    expect(out[0].label).toContain('delayed') // freshness surfaced in the label, not just the structured field
   })
 
   it('unions UTA broker hits (barId = aliceId, secType → assetClass)', async () => {
@@ -167,6 +168,7 @@ describe('searchBarSources — federated candidates', () => {
       expect.objectContaining({ barId: 'alpaca-paper|AAPL', sourceId: 'alpaca-paper', symbol: 'AAPL', assetClass: 'equity', barCapability: 'realtime' }),
       expect.objectContaining({ barId: 'bybit-main|BTC/USDT:USDT', sourceId: 'bybit-main', symbol: 'BTC', assetClass: 'crypto', barCapability: 'realtime' }),
     ])
+    expect(uta[0].label).toContain('realtime') // broker freshness shown in the label too
     // vendor side still present (redundancy)
     expect(out.some((c) => c.source === 'vendor')).toBe(true)
   })

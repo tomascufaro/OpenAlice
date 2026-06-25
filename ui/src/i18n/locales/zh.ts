@@ -36,6 +36,13 @@ export const zh: Resources = {
       title: '语言',
       description: '界面语言，立即生效。',
     },
+    appearance: {
+      title: '外观',
+      description: '布局与界面偏好，仅保存在本设备。',
+      showEditorTabs: '显示编辑器标签页',
+      showEditorTabsOn: '编辑器上方显示标签栏 —— 点击切换，× 或中键关闭。',
+      showEditorTabsOff: '标签栏已隐藏。从侧栏导航；想要 VS Code 式标签页就打开它。',
+    },
     category: {
       general: '通用',
       aiProvider: 'AI 提供商',
@@ -96,6 +103,7 @@ export const zh: Resources = {
   },
   chat: {
     newChat: '新对话',
+    newSession: '在此对话中新建会话',
     newWorkspace: '新建工作区',
     moreOptions: '更多选项',
     today: '今天',
@@ -112,6 +120,9 @@ export const zh: Resources = {
   chatLanding: {
     heading: '今天想研究点什么？',
     subheading: '让 Alice 帮你研究、分析或交易——行情数据和工具都已就位。',
+    targetHeading: '在此 workspace 中新建会话',
+    targetSub: '这段对话将在 {{tag}} 内创建——选个运行时直接发送。',
+    clearTarget: '改为新对话',
     placeholder: '问 Alice…',
     workspaceType: '对话',
     defaultAgent: '默认',
@@ -274,6 +285,8 @@ export const zh: Resources = {
   tracked: {
     nothingTrackedYet: '还没有追踪任何东西。',
     backlinksTooltip: '{{count}} 条笔记链接到此',
+    assets: '标的',
+    topics: '主题',
     pageDescription: '{{count}} 个追踪 · 资产与主题',
     selectFromSidebar: '从侧栏选择一个实体。',
     referencedIn_one: '被 {{count}} 条笔记引用',
@@ -289,6 +302,12 @@ export const zh: Resources = {
     pageDescription: '共 {{count}} 条 · 工作区状态更新',
     selectFromSidebar: '从侧栏选择一条。',
     commentsSection: '评论',
+    documentsSection: '文档',
+    docExpand: '展开',
+    docCollapse: '收起',
+    docNoPreview: '暂无预览 —— 展开查看。',
+    viewTime: '时间 —— 最新在前',
+    viewWorkspace: '按工作区分组',
     workspaceNotExists: '工作区已不存在',
     replyInWorkspace: '在 {{label}} 中回复…',
     cannotReplyWorkspaceGone: '工作区已不存在——无处回复。',

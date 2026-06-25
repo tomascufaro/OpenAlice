@@ -227,6 +227,8 @@ export function createBarService(deps: BarServiceDeps): BarService {
         for (const r of vendorRes.value) {
           const symbol = String(r.symbol ?? r.id ?? '')
           const provider = deps.vendorProviders[r.assetClass]
+          const cap = VENDOR_CAPABILITY[provider]
+          const base = r.name ? `${symbol} · ${r.name} (${provider})` : `${symbol} (${provider})`
           out.push({
             barId: formatBarId(provider, symbol),
             source: 'vendor',
@@ -234,8 +236,11 @@ export function createBarService(deps: BarServiceDeps): BarService {
             symbol,
             name: r.name ?? undefined,
             assetClass: r.assetClass,
-            label: r.name ? `${symbol} · ${r.name} (${provider})` : `${symbol} (${provider})`,
-            barCapability: VENDOR_CAPABILITY[provider],
+            // Surface freshness IN the label, not just the structured barCapability
+            // field, so the agent can't miss that a vendor source is delayed even
+            // when it deliberately falls back to one (yfinance/fmp are EOD-delayed).
+            label: cap ? `${base} · ${cap}` : base,
+            barCapability: cap,
           })
         }
       }
@@ -253,12 +258,25 @@ export function createBarService(deps: BarServiceDeps): BarService {
             // Venue-decided asset class is authoritative; secType is only a
             // broker-blind fallback (and wrong for e.g. a CCXT dated future).
             assetClass: hit.assetClass ?? secTypeToAssetClass(hit.contract.secType),
-            label: symbol ? `${symbol} (${hit.source})` : `${barId}`,
+            label: (symbol ? `${symbol} (${hit.source})` : barId) + ' · realtime',
             barCapability: 'realtime',
           })
         }
       }
 
+      // Order by freshness so the agent's default pick is the freshest source:
+      // broker bars (realtime) float above delayed vendors (yfinance/fmp). The
+      // list stays fully redundant — this is only the suggested ordering; every
+      // candidate is still returned. (Array.sort is stable → within-source order
+      // is preserved.)
+      const FRESHNESS_RANK: Record<BarCapability, number> = {
+        realtime: 0, iex: 1, subscription: 2, delayed: 3, free: 4,
+      }
+      out.sort(
+        (a, b) =>
+          (a.barCapability ? FRESHNESS_RANK[a.barCapability] : 5) -
+          (b.barCapability ? FRESHNESS_RANK[b.barCapability] : 5),
+      )
       return out
     },
 

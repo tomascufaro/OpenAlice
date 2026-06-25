@@ -601,6 +601,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     let prompt: string;
     let agentId: string | undefined;
     let credentialSlug: string | undefined;
+    let targetWsId: string | undefined;
     try {
       const body = await safeJson(c);
       const fields = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
@@ -614,6 +615,10 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       // consulted for opencode/pi; claude/codex ignore it (own login).
       const rawSlug = fields['credentialSlug'];
       if (typeof rawSlug === 'string' && rawSlug.length > 0) credentialSlug = rawSlug;
+      // Optional: spawn into THIS existing workspace instead of today's. The
+      // chat sidebar's per-workspace "+" ("Ask Alice, but in this workspace").
+      const rawTarget = fields['targetWsId'];
+      if (typeof rawTarget === 'string' && rawTarget.length > 0) targetWsId = rawTarget;
     } catch (err) {
       return c.json({ error: 'bad_request', message: (err as Error).message }, 400);
     }
@@ -625,11 +630,19 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     // heavy (bash + git + skill injection) but happens at most once per day. The
     // find-or-create runs through `chatWsGate` so concurrent first-of-day
     // launches don't double-bootstrap.
-    const run = chatWsGate.catch(() => undefined).then(() => findOrCreateChatWorkspace());
-    chatWsGate = run;
-    const target = await run;
-    if (!target.ok) return c.json(target.body, target.status as 400 | 409 | 500);
-    const meta = target.meta;
+    let meta: WorkspaceMeta;
+    if (targetWsId) {
+      // Targeted: spawn a new session into the given existing workspace.
+      const found = svc.registry.list().find((w) => w.id === targetWsId);
+      if (!found) return c.json({ error: 'workspace_not_found' }, 404);
+      meta = found;
+    } else {
+      const run = chatWsGate.catch(() => undefined).then(() => findOrCreateChatWorkspace());
+      chatWsGate = run;
+      const target = await run;
+      if (!target.ok) return c.json(target.body, target.status as 400 | 409 | 500);
+      meta = target.meta;
+    }
 
     // A loginless runtime (opencode/pi) can't start without an AI config — seed
     // it from the vault before spawn. The dead-end (no compatible credential at

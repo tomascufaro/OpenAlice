@@ -8,10 +8,12 @@ import {
   Code2,
   Cpu,
   KeyRound,
+  LayoutGrid,
   Loader2,
   MessageSquare,
   Paperclip,
   Sparkles,
+  X,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -56,10 +58,17 @@ const AGENT_ICONS: Record<string, LucideIcon> = {
  * way — the bottom row shows the workspace type (Chat) and a small runtime
  * picker (the four agent CLIs), defaulting to the workspace's default agent.
  */
-export function ChatLandingPage() {
+export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: string } } }) {
   const { t } = useTranslation()
   const { quickChat, agents, workspaces } = useWorkspaces()
   const openOrFocus = useWorkspace((s) => s.openOrFocus)
+
+  // Targeted launch: the chat sidebar's per-workspace "+" routes here with a
+  // targetWsId — "Ask Alice, but spawn the session in THIS workspace" rather
+  // than the default (today's chat workspace). Same composer; the send just
+  // carries the target.
+  const targetWsId = spec.params.targetWsId
+  const targetWs = targetWsId ? workspaces.find((w) => w.id === targetWsId) : undefined
 
   // The selectable agent runtimes = the agent CLIs (the bare shell has no agent
   // loop, so it can't be seeded with a first message).
@@ -89,7 +98,10 @@ export function ChatLandingPage() {
   // Default to the first INSTALLED CLI until the user picks one — so a fresh
   // box that only has, say, codex doesn't silently default to a missing claude.
   const firstInstalled = cliAgents.find(isInstalled)
-  const effectiveAgent = selectedAgent ?? firstInstalled?.id ?? cliAgents[0]?.id ?? null
+  // When targeting an existing workspace, default the picker to that
+  // workspace's own agent (the user can still switch).
+  const effectiveAgent =
+    selectedAgent ?? targetWs?.agents[0] ?? firstInstalled?.id ?? cliAgents[0]?.id ?? null
   const selectedInfo = cliAgents.find((a) => a.id === effectiveAgent) ?? null
   const SelectedIcon = selectedInfo ? AGENT_ICONS[selectedInfo.id] : undefined
   // Surface install guidance when the chosen runtime isn't on PATH.
@@ -208,6 +220,7 @@ export function ChatLandingPage() {
         prompt,
         effectiveAgent ?? undefined,
         needsCred ? (effectiveCred ?? undefined) : undefined,
+        targetWsId,
       )
       setValue('')
     } catch (err) {
@@ -250,11 +263,42 @@ export function ChatLandingPage() {
 
       <div className="relative z-10 w-full max-w-2xl flex flex-col gap-5">
         <div className="text-center space-y-1.5">
-          <h1 className="text-xl md:text-2xl font-semibold text-text">{t('chatLanding.heading')}</h1>
-          <p className="text-sm text-text-muted">{t('chatLanding.subheading')}</p>
+          {targetWs ? (
+            <>
+              <h1 className="text-xl md:text-2xl font-semibold text-text">
+                {t('chatLanding.targetHeading')}
+              </h1>
+              <div className="flex items-center justify-center gap-2 pt-1">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 pl-2.5 pr-1.5 py-1 text-[12.5px] font-medium text-accent">
+                  <LayoutGrid className="w-3.5 h-3.5 shrink-0" />
+                  {targetWs.tag}
+                  <button
+                    type="button"
+                    onClick={() => openOrFocus({ kind: 'chat-landing', params: {} })}
+                    aria-label={t('chatLanding.clearTarget')}
+                    title={t('chatLanding.clearTarget')}
+                    className="ml-0.5 rounded-full p-0.5 text-accent/70 hover:text-accent hover:bg-accent/20 transition-colors"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <h1 className="text-xl md:text-2xl font-semibold text-text">{t('chatLanding.heading')}</h1>
+              <p className="text-sm text-text-muted">{t('chatLanding.subheading')}</p>
+            </>
+          )}
         </div>
 
-        <div className="bg-bg-secondary/60 border border-border/60 rounded-2xl px-3 pt-3 pb-2 transition-colors focus-within:border-accent/50">
+        <div
+          className={`rounded-2xl px-3 pt-3 pb-2 transition-colors ${
+            targetWs
+              ? 'bg-accent/[0.04] border border-accent/45 ring-1 ring-accent/15 focus-within:border-accent/70'
+              : 'bg-bg-secondary/60 border border-border/60 focus-within:border-accent/50'
+          }`}
+        >
           <textarea
             ref={textareaRef}
             value={value}
