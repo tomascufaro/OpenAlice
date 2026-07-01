@@ -37,7 +37,7 @@ export interface Profile {
 
 export type CredentialVendor =
   | 'anthropic' | 'openai' | 'google'
-  | 'minimax' | 'glm' | 'kimi' | 'deepseek'
+  | 'minimax' | 'glm' | 'kimi' | 'deepseek' | 'longcat'
   | 'custom'
 
 export type CredentialAuthType = 'api-key' | 'subscription'
@@ -162,7 +162,7 @@ export interface AIProviderConfig {
 export interface AppConfig {
   aiProvider: AIProviderConfig
   engine: Record<string, unknown>
-  agent: { evolutionMode: boolean; claudeCode: Record<string, unknown> }
+  agent: { allowAiTrading: boolean; claudeCode: Record<string, unknown> }
   compaction: { maxContextTokens: number; maxOutputTokens: number }
   snapshot: {
     enabled: boolean
@@ -289,6 +289,10 @@ export interface BrokerHealthInfo {
   lastSuccessAt?: string
   lastFailureAt?: string
   recovering: boolean
+  /** True while the account's initial broker connect is still in flight; the UI
+   *  renders a "connecting…" state off this (status is optimistically 'healthy'
+   *  during the window, so it can't be inferred from status/reach). */
+  connecting: boolean
   disabled: boolean
 }
 
@@ -323,12 +327,27 @@ export interface AccountInfo {
   dayTradesRemaining?: number
 }
 
+/** A sub-account (wallet) within one broker connection. One for ordinary
+ *  brokers; >1 for separate-wallet venues (Binance: spot / derivatives). */
+export interface SubAccountRef {
+  id: string
+  label: string
+  kind: 'spot' | 'derivatives' | 'unified'
+}
+
 export interface Position {
   contract: {
     aliceId?: string
     symbol?: string
     secType?: string
     exchange?: string
+    /** Primary listing exchange (e.g. NASDAQ, SEHK) — distinct from the
+     *  routing `exchange` (often SMART). Populated for equities; empty for
+     *  crypto. */
+    primaryExchange?: string
+    /** Instrument long-name (e.g. "Apple Inc"). Populated where the broker
+     *  exposes it (IBKR, Alpaca catalog); empty otherwise. */
+    description?: string
     currency?: string
     lastTradeDateOrContractMonth?: string
     strike?: number
@@ -346,6 +365,14 @@ export interface Position {
   marketValue: string
   unrealizedPnL: string
   realizedPnL: string
+  /** Leveraged-derivative risk metadata (crypto perps/futures). Absent for
+   *  spot and brokers without per-position leverage. Mirrors uta-protocol's
+   *  PositionRisk. */
+  risk?: {
+    leverage?: string
+    liquidationPrice?: string
+    marginMode?: 'cross' | 'isolated'
+  }
 }
 
 export interface WalletCommitLog {
@@ -560,6 +587,8 @@ export interface PlaceOrderRequest {
   ocaGroup?: string
   takeProfit?: { price: string }
   stopLoss?: { price: string; limitPrice?: string }
+  /** Target wallet on multi-wallet venues — required when the account spans >1. */
+  subAccountId?: string
   message: string
 }
 
@@ -567,6 +596,8 @@ export interface ClosePositionRequest {
   aliceId: string
   symbol?: string
   qty?: string
+  /** Target wallet on multi-wallet venues — required when the account spans >1. */
+  subAccountId?: string
   message: string
 }
 

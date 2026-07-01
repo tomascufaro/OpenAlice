@@ -55,14 +55,25 @@ export const CLI_EXPORTS: Record<string, CliExport> = {
       rss: {
         glob: 'globRss',
         grep: 'grepRss',
+        // window: date-bounded, oldest-first — for aligning catalysts to a price path.
+        window: 'windowRss',
         read: 'readRss',
       },
       market: {
         search: 'marketSearchForResearch',
+        // Discover data sources + drive them: `vendors` lists what's available,
+        // each with on/off state and a usage note (symbol convention, search
+        // language); `vendor-set` flips one on/off, live on the next search.
+        vendors: 'listMarketVendors',
+        'vendor-set': 'setMarketVendor',
       },
       analysis: {
         'search-bars': 'searchBars',
         quant: 'calculateQuant',
+        // Honest as-of read (dated bars, no-lookahead, freshness contract) + a
+        // path-dependent backtest. The Retrospective / Time-Machine primitives.
+        snapshot: 'marketSnapshot',
+        simulate: 'simulate',
       },
       think: {
         calc: 'calculate',
@@ -157,6 +168,18 @@ export const CLI_EXPORTS: Record<string, CliExport> = {
       track: {
         add: 'entity_upsert',
         search: 'entity_search',
+      },
+      // issue: the issue board. READS are GLOBAL — `list` scans every
+      // workspace's titles, `show <name>` resolves a name across the board and
+      // returns full detail (issue + runs + inbox reports). WRITES stay local —
+      // create/update/comment author in the CALLER's own `.alice/issues/`
+      // (editing a peer's board is the human-approved peer-edit path).
+      issue: {
+        update: 'issue_update',
+        comment: 'issue_comment',
+        create: 'issue_create',
+        list: 'issue_list',
+        show: 'issue_show',
       },
     },
   },

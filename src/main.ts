@@ -3,7 +3,7 @@ import { dirname } from 'path'
 // The in-process AI loop (AgentCenter, then GenerateRouter + AgentWork) is gone
 // as of 0.40 — the model loop runs inside the native workspace CLIs; autonomous
 // runs go through headless workspace dispatch (cron → workspace).
-import { loadConfig } from './core/config.js'
+import { loadConfig, readMarketDataConfig } from './core/config.js'
 import { printLegacyDataNotice } from './core/legacy-data-notice.js'
 import { dataPath, defaultPath } from '@/core/paths.js'
 import type { Plugin, EngineContext } from './core/types.js'
@@ -24,7 +24,10 @@ import { getSDKExecutor, buildRouteMap, SDKEquityClient, SDKCryptoClient, SDKCur
 import type { EquityClientLike, CryptoClientLike, CurrencyClientLike, EtfClientLike, IndexClientLike, DerivativesClientLike, CommodityClientLike, EconomyClientLike } from './domain/market-data/client/types.js'
 import { buildSDKCredentials } from './domain/market-data/credential-map.js'
 import { createMarketSearchTools } from './tool/market.js'
+import { createVendorTools } from './tool/market-vendors.js'
 import { createQuantTools } from './tool/quant.js'
+import { createSnapshotTools } from './tool/snapshot.js'
+import { createSimulateTools } from './tool/simulate.js'
 import { createBarService } from './domain/market-data/bars/index.js'
 import { createReferenceData } from './domain/market-data/reference/service.js'
 import { createSectorRotationTools } from './tool/sector-rotation.js'
@@ -42,6 +45,7 @@ import { workspacePathFactory } from './tool/workspace-path.js'
 import { createEntityStore } from './core/entity-store.js'
 import { entityUpsertFactory } from './tool/entity-upsert.js'
 import { entitySearchFactory } from './tool/entity-search.js'
+import { issueToolFactories } from './tool/issue-tools.js'
 import { createEventLog } from './core/event-log.js'
 import { createToolCallLog } from './core/tool-call-log.js'
 import { createListenerRegistry } from './core/listener-registry.js'
@@ -98,6 +102,7 @@ async function main() {
   workspaceToolCenter.register(workspacePathFactory)
   workspaceToolCenter.register(entityUpsertFactory)
   workspaceToolCenter.register(entitySearchFactory)
+  for (const f of issueToolFactories) workspaceToolCenter.register(f)
 
   // ==================== UTA SDK (HTTP boundary) ====================
   //
@@ -167,7 +172,17 @@ async function main() {
   const commodityCatalog = new CommodityCatalog()
   commodityCatalog.load()
 
-  const marketSearch = { symbolIndex, cryptoClient, currencyClient, commodityCatalog }
+  // Default equity vendor + user-opted incremental vendors (eastmoney, …),
+  // de-duped, fanned out in searchBars; yfinance stays the always-on default.
+  // Resolved PER search (not a boot snapshot) so a vendor the agent enables at
+  // runtime via setMarketVendor — written to market-data.json, which the
+  // resolver re-reads per request — is live on the next search, no restart.
+  const getEquityVendors = async () => {
+    const md = await readMarketDataConfig()
+    return [...new Set([md.providers.equity, ...md.extraVendors])]
+  }
+
+  const marketSearch = { symbolIndex, equityVendors: getEquityVendors, equityClient, cryptoClient, currencyClient, commodityCatalog }
 
   // Federated bar layer — vendor (OpenTypeBB) + broker (UTA) OHLCV behind one
   // barId-keyed interface. Vendor branch live now; UTA branch lands with Phase 1.
@@ -200,13 +215,17 @@ async function main() {
 
   toolCenter.register(createThinkingTools(), 'thinking')
 
-  // One unified set of trading tools — routes via `source` parameter at runtime
+  // One unified set of trading tools — routes via `source` parameter at runtime.
+  // The getter reads `config.agent.allowAiTrading` live (config is mutated in
+  // place on Settings writes), so toggling AI trading takes effect without a
+  // restart.
   toolCenter.register(
-    createTradingTools(utaManager),
+    createTradingTools(utaManager, () => config.agent.allowAiTrading),
     'trading',
   )
 
   toolCenter.register(createMarketSearchTools(marketSearch), 'market-search')
+  toolCenter.register(createVendorTools(getSDKExecutor()), 'market-vendors')
   toolCenter.register(createReferenceBoardTools(reference), 'market-board')
   toolCenter.register(createEquityTools(equityClient), 'equity')
   if (etfClient) {
@@ -219,6 +238,8 @@ async function main() {
   // — calculateQuant (v2, barId-keyed) supersedes it and the two descriptions
   // confused the model / bloated context. The code remains for now.
   toolCenter.register(createQuantTools({ barService }), 'quant')
+  toolCenter.register(createSnapshotTools(barService), 'snapshot')
+  toolCenter.register(createSimulateTools(barService), 'simulate')
   toolCenter.register(createSectorRotationTools(equityClient, config.marketData.hub), 'sector-rotation')
   if (derivativesClient) {
     toolCenter.register(createDerivativesTools(derivativesClient), 'derivatives')

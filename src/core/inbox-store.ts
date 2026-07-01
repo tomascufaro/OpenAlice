@@ -41,6 +41,35 @@ export interface InboxDoc {
   path: string
 }
 
+/**
+ * Where an inbox entry came from — the agent-INVISIBLE provenance the server
+ * stamps onto every push. The agent never supplies any of this (exactly as it
+ * never supplies its own wsId): the run identity is injected as a spawn-time env
+ * var, carried out-of-band on an HTTP header by OpenAlice-owned code, and
+ * resolved server-side from the authoritative HeadlessTaskRegistry. It's the
+ * link the UI cross-references on: an inbox card → its originating run/issue,
+ * an issue detail → the inbox reports it produced.
+ *
+ * Two live kinds: `kind:'headless'` (a dispatched run — `runId` always, set from
+ * the spawn-injected AQ_RUN_ID and resolved against the HeadlessTaskRegistry;
+ * `issueId` when a scheduled issue fired it) and `kind:'interactive'` (a
+ * human-attended PTY session — `sessionId`, the pre-allocated SessionRegistry
+ * record id, set from the spawn-injected AQ_SESSION_ID and resolved against the
+ * session registry). `agent` comes off the authoritative record in both. Absent
+ * on manual pushes that carry no header → `origin` is undefined.
+ */
+export interface InboxOrigin {
+  kind: 'headless' | 'interactive' | 'manual'
+  /** The headless run's taskId (== HeadlessTaskRegistry key). */
+  runId?: string
+  /** The scheduled issue that fired the run, when applicable. */
+  issueId?: string
+  /** The interactive session's pre-allocated SessionRegistry record id. */
+  sessionId?: string
+  /** The agent CLI id (claude/codex/…) from the run record. */
+  agent?: string
+}
+
 export interface InboxInput {
   workspaceId: string
   /** Display snapshot of the workspace label. Optional; readers fall
@@ -51,6 +80,10 @@ export interface InboxInput {
   docs?: InboxDoc[]
   /** Agent's message body (markdown). Renders below docs. */
   comments?: string
+  /** Agent-INVISIBLE provenance, stamped server-side from the spawn-injected
+   *  run header (never supplied by the agent). Optional + additive: old JSONL
+   *  entries parse with `origin === undefined`, so NO migration is needed. */
+  origin?: InboxOrigin
 }
 
 export interface InboxEntry extends InboxInput {

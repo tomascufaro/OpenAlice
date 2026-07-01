@@ -17,11 +17,10 @@
  * release surface with no TS-dev-tooling dependency, the same reason
  * probe-port.ts is duplicated rather than imported.
  *
- * Out of scope (future iterations): tray icon, full auto-update (L2 — needs
- * code signing, blocked by Squirrel.Mac), multi-window, native menus.
+ * Out of scope (future iterations): tray icon, multi-window, native menus.
  */
 
-import { app, BrowserWindow, dialog, shell, Menu } from 'electron'
+import { app, BrowserWindow, dialog, Menu } from 'electron'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { mkdir, readFile, watch } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
@@ -29,7 +28,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { probeFreePort } from './probe-port.js'
 import { relocateLegacyData } from './relocate-data.js'
-import { checkForUpdate } from './update-check.js'
+import { configureAutoUpdate } from './auto-update.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -308,24 +307,7 @@ app.whenReady().then(async () => {
   })
   win.loadURL(`http://localhost:${webPort}/`)
 
-  // L1 update check — non-blocking; surfaces a dialog only when a newer
-  // release exists. Never gates launch, never auto-downloads (no signing).
-  void checkForUpdate(app.getVersion()).then((update) => {
-    if (!update) return
-    void dialog
-      .showMessageBox(win, {
-        type: 'info',
-        title: 'OpenAlice — update available',
-        message: `A newer version of OpenAlice is available: ${update.version}`,
-        detail: `You're on ${app.getVersion()}. Download the new version from the release page.`,
-        buttons: ['Download', 'Later'],
-        defaultId: 0,
-        cancelId: 1,
-      })
-      .then(({ response }) => {
-        if (response === 0) void shell.openExternal(update.url)
-      })
-  })
+  configureAutoUpdate(win, { beforeInstall: stopChildren })
 })
 
 async function restartUTA(utaUrl: string, spawnUTA: () => ChildProcess): Promise<void> {
@@ -378,35 +360,30 @@ async function startFlagWatcher(
   }
 }
 
-/** Cascade tree-kill both children, then exit once they're gone. */
-function shutdown(): void {
-  if (appQuitting) return
+/** Cascade tree-kill both children. */
+async function stopChildren(): Promise<void> {
   appQuitting = true
   const children = [uta, alice].filter((c): c is ChildProcess => c != null && c.exitCode === null && !c.killed)
-  if (children.length === 0) {
-    app.exit(0)
-    return
-  }
+  if (children.length === 0) return
   console.log(`[guardian] shutting down — SIGTERM → ${children.length} child(ren)`)
-  let remaining = children.length
-  const done = (): void => {
-    if (--remaining <= 0) {
-      clearTimeout(sigkill)
-      app.exit(0)
-    }
-  }
-  for (const c of children) {
-    c.once('exit', done)
-    killTree(c, 'SIGTERM')
-  }
-  const sigkill = setTimeout(() => {
-    for (const c of children) {
+  await Promise.all(
+    children.map(async (c) => {
+      const exited = new Promise<void>((r) => c.once('exit', () => r()))
+      killTree(c, 'SIGTERM')
+      await Promise.race([exited, new Promise((r) => setTimeout(r, SIGTERM_GRACE_MS))])
       if (c.exitCode === null && !c.killed) {
         console.warn(`[guardian] child pid=${c.pid} did not exit after ${SIGTERM_GRACE_MS}ms → SIGKILL`)
         killTree(c, 'SIGKILL')
+        await exited
       }
-    }
-  }, SIGTERM_GRACE_MS)
+    }),
+  )
+}
+
+/** Cascade tree-kill both children, then exit once they're gone. */
+function shutdown(): void {
+  if (appQuitting) return
+  void stopChildren().finally(() => app.exit(0))
 }
 
 app.on('before-quit', (e) => {

@@ -13,13 +13,18 @@
  * a data-model change.
  */
 
+export type WorkspaceSource = 'chat'
+
 export type ViewSpec =
   | { kind: 'workspace-list'; params: Record<string, never> }
-  | { kind: 'workspace';      params: { wsId: string; sessionId?: string } }
+  | { kind: 'workspace';      params: { wsId: string; sessionId?: string; source?: WorkspaceSource } }
   | { kind: 'template-catalog'; params: Record<string, never> }
   | { kind: 'template-detail';  params: { name: string } }
   | { kind: 'portfolio';      params: Record<string, never> }
-  | { kind: 'automation';     params: { section: 'schedules' | 'runs' | 'api' | 'flow' | 'webhook' } }
+  | { kind: 'issue';          params: Record<string, never> }
+  | { kind: 'issue-detail';   params: { wsId: string; id: string } }
+  | { kind: 'tracked-issue-detail'; params: { wsId: string; id: string } }
+  | { kind: 'automation';     params: { section: 'runs' | 'api' | 'flow' | 'webhook' } }
   | { kind: 'news';           params: Record<string, never> }
   | { kind: 'market-list';    params: Record<string, never> }
   | { kind: 'market-rotation'; params: Record<string, never> }
@@ -55,6 +60,7 @@ export type ActivitySection =
   | 'dev'
   | 'market'
   | 'portfolio'
+  | 'issue'
   | 'automation'
   | 'news'
 

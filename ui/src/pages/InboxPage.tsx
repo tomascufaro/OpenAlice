@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { formatRelativeTime, getIntlLocale } from '../lib/intl'
-import { ArrowRight, ChevronRight, MessageSquare, Trash2 } from 'lucide-react'
+import { ArrowRight, Bot, Check, ChevronRight, Copy, Download, ListChecks, MessageSquare, Terminal, Trash2 } from 'lucide-react'
 import { PageHeader } from '../components/PageHeader'
+import { Skeleton } from '../components/StateViews'
 import { MarkdownContent } from '../components/MarkdownContent'
 import { FileContentView } from '../components/FileContentView'
 import { api } from '../api'
 import { inboxLive, refreshInbox, removeInboxOptimistically } from '../live/inbox'
 import { useInboxSelection } from '../live/inbox-selection'
 import { useInboxRead } from '../live/inbox-read'
+import { useIssues } from '../hooks/useIssues'
 import { useWorkspace } from '../tabs/store'
-import { useWorkspaces } from '../contexts/WorkspacesContext'
+import { useWorkspaces } from '../contexts/workspaces-context'
 import { readWorkspaceFile, type ReadFileResult } from '../components/workspace/api'
 import type { InboxEntry, InboxDoc } from '../api/inbox'
 
@@ -95,7 +97,7 @@ export function InboxPage({ visible }: InboxPageProps) {
       />
       <div className="flex-1 overflow-y-auto min-h-0">
         {loading && entries.length === 0 ? (
-          <div className="px-6 py-8 text-text-muted text-sm">{t('common.loading')}</div>
+          <InboxLoadingSkeleton />
         ) : entries.length === 0 ? (
           <EmptyState />
         ) : !selected ? (
@@ -110,6 +112,19 @@ export function InboxPage({ visible }: InboxPageProps) {
           />
         )}
       </div>
+    </div>
+  )
+}
+
+function InboxLoadingSkeleton() {
+  return (
+    <div aria-hidden="true" className="px-6 py-4">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="py-3 border-b border-border/40">
+          <Skeleton className="h-4 w-2/3 rounded mb-2" />
+          <Skeleton className="h-3 w-2/5 rounded" />
+        </div>
+      ))}
     </div>
   )
 }
@@ -148,6 +163,26 @@ function Detail({ entry, onDelete }: { entry: InboxEntry; onDelete: () => void }
   const openOrFocus = useWorkspace((s) => s.openOrFocus)
   const setSidebar = useWorkspace((s) => s.setSidebar)
 
+  // Origin breadcrumb — the run/issue this push came from (server-stamped,
+  // agent-invisible). A scheduled issue gives a navigable "from Issue …"
+  // breadcrumb; a bare headless run only gets a lighter, non-navigable marker
+  // (there's no per-run detail surface to open).
+  const origin = entry.origin
+  const issueId = origin?.issueId
+  // Interactive provenance — the human-attended session this push came from
+  // (server-stamped from AQ_SESSION_ID, validated against the session registry).
+  // Navigable: opens/focuses that exact session tab.
+  const sessionId = origin?.kind === 'interactive' ? origin.sessionId : undefined
+  // Resolve the issue id (a filename stem) to its display title via the warm,
+  // process-cached board snapshot — a cheap path (no extra fetch on the hot
+  // line). Falls back to the stem when the board hasn't resolved it.
+  const { data: issueBoard } = useIssues()
+  const issueTitle = useMemo(() => {
+    if (!issueId) return null
+    const ws = issueBoard?.workspaces.find((w) => w.wsId === entry.workspaceId)
+    return ws?.issues.find((i) => i.id === issueId)?.title ?? null
+  }, [issueBoard, entry.workspaceId, issueId])
+
   const openWorkspace = () => {
     if (!wsAlive) return
     // Switch the sidebar to Workspaces so the user sees the sessions list
@@ -155,6 +190,22 @@ function Detail({ entry, onDelete }: { entry: InboxEntry; onDelete: () => void }
     // chat" — they need both views).
     setSidebar('workspaces')
     openOrFocus({ kind: 'workspace', params: { wsId: entry.workspaceId } })
+  }
+
+  const openIssue = () => {
+    if (!issueId) return
+    setSidebar('issue')
+    openOrFocus({ kind: 'issue-detail', params: { wsId: entry.workspaceId, id: issueId } })
+  }
+
+  // Jump to the originating interactive session — reuses the same
+  // workspace-tab open/focus wiring as the reply bar, pinned to the session id
+  // (WorkspaceView focuses the matching session record). Switch the sidebar to
+  // Workspaces so the sessions list shows alongside the tab.
+  const openSession = () => {
+    if (!wsAlive || !sessionId) return
+    setSidebar('workspaces')
+    openOrFocus({ kind: 'workspace', params: { wsId: entry.workspaceId, sessionId } })
   }
 
   return (
@@ -169,6 +220,40 @@ function Detail({ entry, onDelete }: { entry: InboxEntry; onDelete: () => void }
         >
           {displayLabel}
         </span>
+
+        {/* Origin — the run/issue this push came from. Navigable for a
+         *  scheduled issue; a lighter marker for a bare headless run. */}
+        {issueId ? (
+          <button
+            type="button"
+            onClick={openIssue}
+            title={`From issue ${issueId}`}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-text-muted/80 hover:text-accent hover:bg-accent/10 transition-colors"
+          >
+            <ListChecks size={12} strokeWidth={1.75} className="shrink-0" />
+            <span className="truncate max-w-[220px]">from {issueTitle ?? issueId}</span>
+          </button>
+        ) : sessionId ? (
+          <button
+            type="button"
+            onClick={openSession}
+            disabled={!wsAlive}
+            title={`From session ${sessionId}`}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-text-muted/80 hover:text-accent hover:bg-accent/10 transition-colors disabled:opacity-50 disabled:hover:text-text-muted/80 disabled:hover:bg-transparent disabled:cursor-default"
+          >
+            <Terminal size={12} strokeWidth={1.75} className="shrink-0" />
+            <span className="truncate max-w-[220px]">from session{origin?.agent ? ` · ${origin.agent}` : ''}</span>
+          </button>
+        ) : origin?.runId ? (
+          <span
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-text-muted/55"
+            title={`From headless run ${origin.runId}`}
+          >
+            <Bot size={12} strokeWidth={1.75} className="shrink-0" />
+            <span>from run{origin.agent ? ` · ${origin.agent}` : ''}</span>
+          </span>
+        ) : null}
+
         <span className="text-[11px] text-text-muted/70 tabular-nums ml-auto">
           {formatAbsolute(entry.ts)}
           <span className="mx-1.5 text-text-muted/40">·</span>
@@ -255,6 +340,7 @@ function DocBlock({
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [result, setResult] = useState<ReadFileResult | null>(null)
+  const [copied, setCopied] = useState(false)
 
   // Fetch on mount: the collapsed card shows a text preview, so we need the
   // content up front. The same `result` then renders in full on expand —
@@ -269,41 +355,100 @@ function DocBlock({
   }, [workspaceId, doc.path])
 
   const preview = useMemo(() => buildDocPreview(result), [result])
+  const markdownActionsAvailable = isMarkdownPath(doc.path) && result?.kind === 'ok'
+
+  const copyMarkdown = async (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    if (!markdownActionsAvailable) return
+    try {
+      await copyText(result.content)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1400)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  const downloadMarkdown = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    if (!markdownActionsAvailable) return
+    const blob = new Blob([result.content], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileNameFromPath(doc.path) || 'report.md'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
 
   const header = (
-    <div className="px-4 py-3 flex items-center gap-2.5">
-      <ChevronRight
-        size={15}
-        strokeWidth={2}
-        aria-hidden
-        className={`shrink-0 text-text-muted/70 transition-transform ${expanded ? 'rotate-90' : ''}`}
-      />
-      <span className="text-[12px]">📄</span>
-      <span className="flex-1 truncate text-[12px] font-mono text-text-muted">{doc.path}</span>
-      <span className="shrink-0 text-[10px] uppercase tracking-wider text-text-muted/45">
-        {expanded ? t('inbox.docCollapse') : t('inbox.docExpand')}
-      </span>
+    <div className="flex items-center gap-1 bg-bg-tertiary/25 hover:bg-bg-tertiary/50 transition-colors">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="min-w-0 flex-1 px-4 py-3 flex items-center gap-2.5 text-left"
+      >
+        <ChevronRight
+          size={15}
+          strokeWidth={2}
+          aria-hidden
+          className={`shrink-0 text-text-muted/70 transition-transform ${expanded ? 'rotate-90' : ''}`}
+        />
+        <span className="text-[12px]">📄</span>
+        <span className="flex-1 truncate text-[12px] font-mono text-text-muted">{doc.path}</span>
+        <span className="shrink-0 text-[10px] uppercase tracking-wider text-text-muted/45">
+          {expanded ? t('inbox.docCollapse') : t('inbox.docExpand')}
+        </span>
+      </button>
+      {isMarkdownPath(doc.path) && (
+        <div className="shrink-0 flex items-center gap-1 pr-3">
+          <button
+            type="button"
+            onClick={copyMarkdown}
+            disabled={!markdownActionsAvailable}
+            title={copied ? t('inbox.docCopiedMarkdown') : t('inbox.docCopyMarkdown')}
+            aria-label={copied ? t('inbox.docCopiedMarkdown') : t('inbox.docCopyMarkdown')}
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-text-muted/65 transition-colors hover:bg-bg-tertiary hover:text-accent disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-text-muted/65"
+          >
+            {copied ? <Check size={14} strokeWidth={2} /> : <Copy size={14} strokeWidth={1.75} />}
+          </button>
+          <button
+            type="button"
+            onClick={downloadMarkdown}
+            disabled={!markdownActionsAvailable}
+            title={t('inbox.docDownloadMarkdown')}
+            aria-label={t('inbox.docDownloadMarkdown')}
+            className="inline-flex h-7 w-7 items-center justify-center rounded text-text-muted/65 transition-colors hover:bg-bg-tertiary hover:text-accent disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-text-muted/65"
+          >
+            <Download size={14} strokeWidth={1.75} />
+          </button>
+        </div>
+      )}
     </div>
   )
 
   return (
     <div className="rounded-lg border border-border bg-bg/50 overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        className="w-full text-left bg-bg-tertiary/25 hover:bg-bg-tertiary/50 transition-colors"
-      >
+      <div>
         {header}
         {/* Collapsed: a short text preview so the card reads as openable
          *  content rather than a bare filename. Hidden once expanded (the
          *  full render takes over below). */}
         {!expanded && (
-          <div className="pl-11 pr-4 pb-3 -mt-1.5 text-[12px] leading-relaxed text-text-muted/70 line-clamp-2">
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="block w-full text-left bg-bg-tertiary/25 hover:bg-bg-tertiary/50 transition-colors pl-11 pr-4 pb-3 -mt-1.5 text-[12px] leading-relaxed text-text-muted/70"
+          >
+            <span className="line-clamp-2">
             {result === null ? t('common.loading') : preview || t('inbox.docNoPreview')}
-          </div>
+            </span>
+          </button>
         )}
-      </button>
+      </div>
       {expanded && (
         <div className="px-4 py-3 border-t border-border/50">
           {result === null ? (
@@ -315,6 +460,42 @@ function DocBlock({
       )}
     </div>
   )
+}
+
+function isMarkdownPath(path: string): boolean {
+  return /\.(md|markdown|mdx)$/i.test(path)
+}
+
+function fileNameFromPath(path: string): string {
+  return path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? ''
+}
+
+async function copyText(text: string): Promise<void> {
+  const clipboard = globalThis.navigator?.clipboard
+  try {
+    if (clipboard?.writeText) {
+      await clipboard.writeText(text)
+      return
+    }
+  } catch {
+    // Fall through to the selection-based path below.
+  }
+
+  if (typeof document.execCommand !== 'function') {
+    throw new Error('copy unavailable')
+  }
+
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  ta.style.top = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  const ok = document.execCommand('copy')
+  ta.remove()
+  if (!ok) throw new Error('copy failed')
 }
 
 /** Build a short plain-text preview from a fetched doc, for the collapsed
@@ -354,4 +535,3 @@ function formatAbsolute(ts: number): string {
     hour: '2-digit', minute: '2-digit',
   })
 }
-

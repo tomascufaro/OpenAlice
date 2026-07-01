@@ -1,6 +1,9 @@
 import { api } from '../api'
 import type { InboxEntry } from '../api/inbox'
 import { createLiveStore } from './createLiveStore'
+import { reloadOnHotUpdate } from '../lib/hmr'
+
+reloadOnHotUpdate('live/inbox')
 
 /**
  * Live inbox feed. 20s polling against `/api/inbox/history`. Mirrors the

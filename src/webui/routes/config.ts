@@ -3,9 +3,13 @@ import {
   loadConfig, writeConfigSection, validSections,
   readCredentials, addCredential, deleteCredential, writeCredential, resolveCredential,
   credentialWires,
+  readWorkspaceCredentialDefaults, writeWorkspaceCredentialDefaults,
+  readWorkspaceDefaultAgent, writeWorkspaceDefaultAgent,
   credentialVendorEnum, credentialWireShapeEnum,
   type ConfigSection, type Credential, type CredentialWireShape,
+  type WorkspaceCredentialDefault,
 } from '../../core/config.js'
+import { compatibleCredentials } from '../../workspaces/credential-injection.js'
 
 /** Validate a `{ [wireShape]: baseUrl }` body into a typed wires map. */
 function parseWires(raw: unknown): Partial<Record<CredentialWireShape, string>> {
@@ -66,6 +70,7 @@ export function createConfigRoutes(opts?: ConfigRouteOpts) {
       const list = Object.entries(creds).map(([slug, cred]) => ({
         slug,
         vendor: cred.vendor,
+        ...(cred.label ? { label: cred.label } : {}),
         authType: cred.authType,
         wires: credentialWires(cred), // derives from legacy {baseUrl,wireShape} too
         apiKey: cred.apiKey ?? null,
@@ -80,13 +85,15 @@ export function createConfigRoutes(opts?: ConfigRouteOpts) {
   /** POST /credentials — add an api-key credential (deduped by key). Returns slug. */
   app.post('/credentials', async (c) => {
     try {
-      const body = await c.req.json<{ vendor?: string; wires?: unknown; apiKey?: string }>()
+      const body = await c.req.json<{ vendor?: string; label?: string; wires?: unknown; apiKey?: string }>()
       const apiKey = body.apiKey?.trim()
       if (!apiKey) return c.json({ error: 'apiKey is required' }, 400)
       const vendorParse = credentialVendorEnum.safeParse(body.vendor)
+      const label = body.label?.trim()
       const wires = parseWires(body.wires)
       const cred: Credential = {
         vendor: vendorParse.success ? vendorParse.data : 'custom',
+        ...(label ? { label } : {}),
         authType: 'api-key',
         apiKey,
         ...(Object.keys(wires).length ? { wires } : {}),
@@ -102,13 +109,15 @@ export function createConfigRoutes(opts?: ConfigRouteOpts) {
   app.put('/credentials/:slug', async (c) => {
     try {
       const slug = c.req.param('slug')
-      const body = await c.req.json<{ vendor?: string; wires?: unknown; apiKey?: string }>()
+      const body = await c.req.json<{ vendor?: string; label?: string; wires?: unknown; apiKey?: string }>()
       const existing = await resolveCredential(slug)
       const apiKey = body.apiKey?.trim() || existing.apiKey
       const vendorParse = credentialVendorEnum.safeParse(body.vendor)
+      const label = body.label?.trim()
       const wires = parseWires(body.wires)
       const cred: Credential = {
         vendor: vendorParse.success ? vendorParse.data : existing.vendor,
+        ...(label || existing.label ? { label: label || existing.label } : {}),
         authType: 'api-key',
         ...(apiKey ? { apiKey } : {}),
         ...(Object.keys(wires).length ? { wires } : { ...(existing.wires ? { wires: existing.wires } : {}) }),
@@ -154,6 +163,83 @@ export function createConfigRoutes(opts?: ConfigRouteOpts) {
       return c.json({ ok: true, response: r.text })
     } catch (err) {
       return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  // ============ Default Workspace Credentials (per-agent) ============
+  //
+  // The user-level "inject my usual key on every new workspace" setting. A
+  // per-agent map of {credentialSlug, model?} that the workspace creator seeds
+  // into each new workspace's file-based AI config at create time — sparing the
+  // user the per-workspace AI-config modal. References the vault above.
+
+  const DEFAULTABLE_AGENTS = ['claude', 'codex', 'opencode', 'pi'] as const
+
+  /**
+   * GET /workspace-credential-defaults — the current per-agent defaults plus,
+   * for the picker, the vault slugs each agent can actually be driven by (the
+   * wire-shape funnel computed server-side, so the UI stays dumb).
+   */
+  app.get('/workspace-credential-defaults', async (c) => {
+    try {
+      const [defaults, creds] = await Promise.all([
+        readWorkspaceCredentialDefaults(),
+        readCredentials(),
+      ])
+      const compatibleByAgent: Record<string, string[]> = {}
+      for (const agent of DEFAULTABLE_AGENTS) {
+        compatibleByAgent[agent] = compatibleCredentials(creds, agent).map(([slug]) => slug)
+      }
+      return c.json({ defaults, compatibleByAgent })
+    } catch (err) {
+      return c.json({ error: String(err) }, 500)
+    }
+  })
+
+  /**
+   * PUT /workspace-credential-defaults — replace the whole per-agent map. Body:
+   * `{ defaults: { [agentId]: { credentialSlug, model? } } }`. An empty/absent
+   * `credentialSlug` for an agent clears its default (handled in the writer).
+   */
+  app.put('/workspace-credential-defaults', async (c) => {
+    try {
+      const body = await c.req.json<{ defaults?: Record<string, WorkspaceCredentialDefault> }>()
+      const incoming = body.defaults ?? {}
+      const next: Record<string, WorkspaceCredentialDefault> = {}
+      for (const agent of DEFAULTABLE_AGENTS) {
+        const def = incoming[agent]
+        if (def && typeof def.credentialSlug === 'string' && def.credentialSlug) {
+          next[agent] = {
+            credentialSlug: def.credentialSlug,
+            ...(typeof def.model === 'string' && def.model ? { model: def.model } : {}),
+          }
+        }
+      }
+      await writeWorkspaceCredentialDefaults(next)
+      return c.json({ defaults: next })
+    } catch (err) {
+      return c.json({ error: String(err) }, 400)
+    }
+  })
+
+  app.get('/workspace-default-agent', async (c) => {
+    try {
+      return c.json({ agent: await readWorkspaceDefaultAgent() })
+    } catch (err) {
+      return c.json({ error: String(err) }, 500)
+    }
+  })
+
+  app.put('/workspace-default-agent', async (c) => {
+    try {
+      const body = await c.req.json<{ agent?: string | null }>()
+      const agent = typeof body.agent === 'string' && DEFAULTABLE_AGENTS.includes(body.agent as typeof DEFAULTABLE_AGENTS[number])
+        ? body.agent
+        : null
+      await writeWorkspaceDefaultAgent(agent)
+      return c.json({ agent })
+    } catch (err) {
+      return c.json({ error: String(err) }, 400)
     }
   })
 

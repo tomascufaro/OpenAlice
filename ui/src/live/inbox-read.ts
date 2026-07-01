@@ -1,6 +1,9 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { inboxLive } from './inbox'
+import { reloadOnHotUpdate } from '../lib/hmr'
+
+reloadOnHotUpdate('live/inbox-read')
 
 /**
  * Per-entry read tracking for the Inbox — Linear-style.

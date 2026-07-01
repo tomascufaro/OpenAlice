@@ -5,6 +5,10 @@ import {
   demoAccountByUTA,
   demoAccountInfo,
   demoPositionsByUTA,
+  demoSubAccountsByUTA,
+  demoCryptoAccountBySub,
+  demoCryptoPositionsBySub,
+  DEMO_UTA_CRYPTO,
   demoUTAConfigs,
   demoUTAConfig,
   demoEquityCurve,
@@ -57,12 +61,25 @@ export const tradingHandlers = [
     HttpResponse.json({ success: true, message: 'Demo mode — reconnect is a no-op.' }),
   ),
 
-  http.get('/api/trading/uta/:id/account', ({ params }) =>
-    HttpResponse.json(demoAccountByUTA[utaId(params)] ?? demoAccountInfo),
+  http.get('/api/trading/uta/:id/subaccounts', ({ params }) =>
+    HttpResponse.json({ subAccounts: demoSubAccountsByUTA[utaId(params)] ?? [{ id: 'default', label: 'Account', kind: 'unified' }] }),
   ),
-  http.get('/api/trading/uta/:id/positions', ({ params }) =>
-    HttpResponse.json({ positions: demoPositionsByUTA[utaId(params)] ?? [] }),
-  ),
+  http.get('/api/trading/uta/:id/account', ({ params, request }) => {
+    const id = utaId(params)
+    const sub = new URL(request.url).searchParams.get('subAccountId')
+    if (id === DEMO_UTA_CRYPTO && sub && demoCryptoAccountBySub[sub]) {
+      return HttpResponse.json(demoCryptoAccountBySub[sub])
+    }
+    return HttpResponse.json(demoAccountByUTA[id] ?? demoAccountInfo)
+  }),
+  http.get('/api/trading/uta/:id/positions', ({ params, request }) => {
+    const id = utaId(params)
+    const sub = new URL(request.url).searchParams.get('subAccountId')
+    if (id === DEMO_UTA_CRYPTO && sub && demoCryptoPositionsBySub[sub]) {
+      return HttpResponse.json({ positions: demoCryptoPositionsBySub[sub] })
+    }
+    return HttpResponse.json({ positions: demoPositionsByUTA[id] ?? [] })
+  }),
   http.get('/api/trading/uta/:id/orders', () => HttpResponse.json({ orders: [] })),
   http.get('/api/trading/uta/:id/order-history', ({ params }) =>
     HttpResponse.json({ orders: demoOrderHistoryByUTA[utaId(params)] ?? [] }),

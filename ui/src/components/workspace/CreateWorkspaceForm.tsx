@@ -19,7 +19,7 @@ import type { FormEvent, ReactElement } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { TAG_HINT, defaultTagFor, useCreateWorkspace } from '../../hooks/useCreateWorkspace'
-import { useWorkspaces } from '../../contexts/WorkspacesContext'
+import { useWorkspaces } from '../../contexts/workspaces-context'
 import type { TemplateInfo, Workspace } from './api'
 
 export interface CreateWorkspaceFormProps {

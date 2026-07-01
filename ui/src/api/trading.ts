@@ -1,5 +1,5 @@
 import { fetchJson } from './client'
-import type { TradingAccount, UTASummary, AccountInfo, Position, WalletCommitLog, ReconnectResult, UTAConfig, WalletStatus, WalletPushResult, WalletRejectResult, TestConnectionResult, BrokerPreset, UTASnapshotSummary, EquityCurvePoint, PlaceOrderRequest, ClosePositionRequest, CancelOrderRequest, OrderErrorResponse, OrderHistoryEntry, TradeHistoryEntry } from './types'
+import type { TradingAccount, UTASummary, AccountInfo, SubAccountRef, Position, WalletCommitLog, ReconnectResult, UTAConfig, WalletStatus, WalletPushResult, WalletRejectResult, TestConnectionResult, BrokerPreset, UTASnapshotSummary, EquityCurvePoint, PlaceOrderRequest, ClosePositionRequest, CancelOrderRequest, OrderErrorResponse, OrderHistoryEntry, TradeHistoryEntry } from './types'
 
 /** Thrown by the one-shot order endpoints when the server returns non-2xx. Carries the phase. */
 export class OrderEntryError extends Error {
@@ -65,12 +65,20 @@ export const tradingApi = {
 
   /** Broker-side account info (cash, equity, margin) for a given UTA.
    *  Note `account` here is the *broker* account, distinct from the UTA. */
-  async utaAccount(utaId: string): Promise<AccountInfo> {
-    return fetchJson(`/api/trading/uta/${utaId}/account`)
+  async utaAccount(utaId: string, subAccountId?: string): Promise<AccountInfo> {
+    const qs = subAccountId ? `?subAccountId=${encodeURIComponent(subAccountId)}` : ''
+    return fetchJson(`/api/trading/uta/${utaId}/account${qs}`)
   },
 
-  async utaPositions(utaId: string): Promise<{ positions: Position[] }> {
-    return fetchJson(`/api/trading/uta/${utaId}/positions`)
+  async utaPositions(utaId: string, subAccountId?: string): Promise<{ positions: Position[] }> {
+    const qs = subAccountId ? `?subAccountId=${encodeURIComponent(subAccountId)}` : ''
+    return fetchJson(`/api/trading/uta/${utaId}/positions${qs}`)
+  },
+
+  /** Sub-accounts (wallets) a UTA spans — one for ordinary brokers,
+   *  >1 for separate-wallet venues (Binance: spot / derivatives). */
+  async utaSubAccounts(utaId: string): Promise<{ subAccounts: SubAccountRef[] }> {
+    return fetchJson(`/api/trading/uta/${utaId}/subaccounts`)
   },
 
   async utaOrders(utaId: string): Promise<{ orders: unknown[] }> {

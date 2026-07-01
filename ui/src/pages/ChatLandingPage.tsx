@@ -17,7 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
-import { useWorkspaces } from '../contexts/WorkspacesContext'
+import { useWorkspaces } from '../contexts/workspaces-context'
 import { installHintFor } from '../components/workspace/agentInstall'
 import {
   listAgentCredentials,
@@ -56,11 +56,11 @@ const AGENT_ICONS: Record<string, LucideIcon> = {
  * session seeded with that message (the agent CLI opens already working on it),
  * and focuses into the session's terminal tab. No template/CLI pickers in the
  * way — the bottom row shows the workspace type (Chat) and a small runtime
- * picker (the four agent CLIs), defaulting to the workspace's default agent.
+ * picker for agent CLIs. Shell is not an agent runtime and is excluded here.
  */
 export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: string } } }) {
   const { t } = useTranslation()
-  const { quickChat, agents, workspaces } = useWorkspaces()
+  const { quickChat, agents, workspaces, defaultAgent, setDefaultAgent } = useWorkspaces()
   const openOrFocus = useWorkspace((s) => s.openOrFocus)
 
   // Targeted launch: the chat sidebar's per-workspace "+" routes here with a
@@ -72,7 +72,10 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
 
   // The selectable agent runtimes = the agent CLIs (the bare shell has no agent
   // loop, so it can't be seeded with a first message).
-  const cliAgents = agents.filter((a) => a.id !== 'shell')
+  const cliAgents = agents.filter((a) => a.kind !== 'utility')
+  const targetCliAgents = targetWs
+    ? cliAgents.filter((a) => targetWs.agents.includes(a.id))
+    : cliAgents
 
   const [value, setValue] = useState('')
   const [launching, setLaunching] = useState(false)
@@ -85,24 +88,28 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
   // Backend probes the host PATH and reports `installed` per agent. Treat a
   // missing value as installed (older backend / don't gate on a stale shape).
   const isInstalled = (a: { installed?: boolean }) => a.installed !== false
-  const anyInstalled = cliAgents.some(isInstalled)
+  const anyInstalled = targetCliAgents.some(isInstalled)
   // Whether the `/agents` fetch has actually landed. Before it does, `agents`
   // is `[]` and `anyInstalled` is falsely false — which would flash the
   // "nothing installed, go install something" nudge on every page load until
   // the request resolves. The backend registers claude/codex/opencode/pi/shell
   // unconditionally, so a loaded list always has ≥1 CLI agent; an empty
-  // `cliAgents` means "still loading" (or the fetch failed) — in both cases we
+  // `targetCliAgents` means "still loading" (or the fetch failed) — in both cases we
   // must NOT assert that the host is missing its runtimes.
-  const agentsKnown = cliAgents.length > 0
+  const agentsKnown = targetCliAgents.length > 0
 
-  // Default to the first INSTALLED CLI until the user picks one — so a fresh
-  // box that only has, say, codex doesn't silently default to a missing claude.
-  const firstInstalled = cliAgents.find(isInstalled)
-  // When targeting an existing workspace, default the picker to that
-  // workspace's own agent (the user can still switch).
+  // Prefer the user-level runtime default when it is valid for this target.
+  // Without a saved default, require the user to pick an agent once; the pick is
+  // persisted as the next default runtime.
+  const defaultAgentUsable =
+    defaultAgent !== null &&
+    targetCliAgents.some((a) => a.id === defaultAgent) &&
+    (!targetWs || targetWs.agents.includes(defaultAgent))
+  const selectedAgentUsable =
+    selectedAgent !== null && targetCliAgents.some((a) => a.id === selectedAgent)
   const effectiveAgent =
-    selectedAgent ?? targetWs?.agents[0] ?? firstInstalled?.id ?? cliAgents[0]?.id ?? null
-  const selectedInfo = cliAgents.find((a) => a.id === effectiveAgent) ?? null
+    (selectedAgentUsable ? selectedAgent : null) ?? (defaultAgentUsable ? defaultAgent : null)
+  const selectedInfo = targetCliAgents.find((a) => a.id === effectiveAgent) ?? null
   const SelectedIcon = selectedInfo ? AGENT_ICONS[selectedInfo.id] : undefined
   // Surface install guidance when the chosen runtime isn't on PATH.
   const selectedMissing = selectedInfo != null && !isInstalled(selectedInfo)
@@ -188,7 +195,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
     openOrFocus({ kind: 'settings', params: { category: 'ai-provider' } })
   }
 
-  const canSend = value.trim().length > 0 && !launching && !noCreds
+  const canSend = value.trim().length > 0 && !launching && !noCreds && effectiveAgent !== null
 
   // Close the agent menu on an outside click.
   useEffect(() => {
@@ -205,6 +212,10 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
   const submit = async () => {
     const prompt = value.trim()
     if (!prompt || launching) return
+    if (effectiveAgent === null) {
+      setAgentMenuOpen(true)
+      return
+    }
     // A loginless runtime with no configured provider can't launch — send the
     // user to set one up instead of spawning an agent that'll die immediately.
     if (noCreds) {
@@ -218,7 +229,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
       // stays open in the background, so clear it for next time.
       await quickChat(
         prompt,
-        effectiveAgent ?? undefined,
+        effectiveAgent,
         needsCred ? (effectiveCred ?? undefined) : undefined,
         targetWsId,
       )
@@ -250,7 +261,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
   }
 
   return (
-    <div className="relative h-full w-full overflow-auto bg-bg flex flex-col items-center justify-center px-4 py-8 md:px-6 md:py-10">
+    <div className="relative h-full w-full overflow-auto bg-bg flex flex-col items-center justify-center px-4 py-6 md:px-6 md:py-10">
       {/* Ask-Alice backdrop — full-bleed, responsive-only layers (gradient wash
           + faint grid). The #302 mock's %-positioned circle / diagonal bars were
           dropped: they drift on portrait and read as pixel-placed art, not a
@@ -261,7 +272,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
         <div className="absolute inset-0 opacity-[0.06] [background-image:linear-gradient(to_right,var(--color-text)_1px,transparent_1px),linear-gradient(to_bottom,var(--color-text)_1px,transparent_1px)] [background-size:96px_96px]" />
       </div>
 
-      <div className="relative z-10 w-full max-w-2xl flex flex-col gap-5">
+      <div className="relative z-10 w-full max-w-2xl flex flex-col gap-4 md:gap-5">
         <div className="text-center space-y-1.5">
           {targetWs ? (
             <>
@@ -286,14 +297,14 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
             </>
           ) : (
             <>
-              <h1 className="text-xl md:text-2xl font-semibold text-text">{t('chatLanding.heading')}</h1>
-              <p className="text-sm text-text-muted">{t('chatLanding.subheading')}</p>
+              <h1 className="text-[19px] md:text-2xl font-semibold text-text leading-tight">{t('chatLanding.heading')}</h1>
+              <p className="text-[13px] md:text-sm text-text-muted leading-relaxed">{t('chatLanding.subheading')}</p>
             </>
           )}
         </div>
 
         <div
-          className={`rounded-2xl px-3 pt-3 pb-2 transition-colors ${
+          className={`rounded-xl md:rounded-2xl px-3 pt-3 pb-2 transition-colors ${
             targetWs
               ? 'bg-accent/[0.04] border border-accent/45 ring-1 ring-accent/15 focus-within:border-accent/70'
               : 'bg-bg-secondary/60 border border-border/60 focus-within:border-accent/50'
@@ -307,12 +318,12 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
             placeholder={t('chatLanding.placeholder')}
             rows={3}
             autoFocus
-            className="w-full bg-transparent resize-none outline-none text-text placeholder:text-text-muted/50 text-[15px] px-2 py-1.5 min-h-[72px] max-h-[40vh]"
+            className="w-full bg-transparent resize-none outline-none text-text placeholder:text-text-muted/50 text-[15px] px-2 py-1.5 min-h-[92px] md:min-h-[72px] max-h-[40vh]"
           />
-          <div className="flex items-center justify-between px-1 pt-1">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-2 px-1 pt-1 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               {/* Workspace type (Chat). Static — quick-chat always targets the chat template. */}
-              <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted bg-bg-tertiary px-2 py-1 rounded-md">
+              <span className="inline-flex min-h-8 items-center gap-1.5 text-[11px] text-text-muted bg-bg-tertiary px-2.5 py-1 rounded-md">
                 <MessageSquare className="w-3 h-3" />
                 {t('chatLanding.workspaceType')}
               </span>
@@ -322,22 +333,22 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
                 <button
                   type="button"
                   onClick={() => setAgentMenuOpen((o) => !o)}
-                  disabled={cliAgents.length === 0}
+                  disabled={targetCliAgents.length === 0}
                   aria-haspopup="menu"
                   aria-expanded={agentMenuOpen}
                   aria-label={t('chatLanding.selectAgent')}
-                  className="inline-flex items-center gap-1.5 text-[11px] text-text-muted bg-bg-tertiary px-2 py-1 rounded-md transition-colors hover:text-text disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="inline-flex min-h-8 max-w-[190px] items-center gap-1.5 text-[11px] text-text-muted bg-bg-tertiary px-2.5 py-1 rounded-md transition-colors hover:text-text disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {SelectedIcon ? <SelectedIcon className="w-3 h-3" /> : null}
-                  {selectedInfo?.displayName ?? t('chatLanding.defaultAgent')}
+                  <span className="truncate">{selectedInfo?.displayName ?? t('chatLanding.selectAgent')}</span>
                   <ChevronDown className="w-3 h-3 opacity-60" />
                 </button>
-                {agentMenuOpen && cliAgents.length > 0 && (
+                {agentMenuOpen && targetCliAgents.length > 0 && (
                   <div
                     role="menu"
                     className="absolute bottom-full left-0 mb-1 min-w-[170px] py-1 bg-bg-secondary border border-border/70 rounded-lg shadow-lg z-10"
                   >
-                    {cliAgents.map((a) => {
+                    {targetCliAgents.map((a) => {
                       const Icon = AGENT_ICONS[a.id]
                       const active = a.id === effectiveAgent
                       const missing = !isInstalled(a)
@@ -348,6 +359,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
                           role="menuitem"
                           onClick={() => {
                             setSelectedAgent(a.id)
+                            void setDefaultAgent(a.id)
                             setAgentMenuOpen(false)
                           }}
                           className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-bg-tertiary ${active ? 'text-accent' : missing ? 'text-text-muted/60' : 'text-text'}`}
@@ -374,7 +386,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
                 <button
                   type="button"
                   onClick={goConfigureProvider}
-                  className="inline-flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-1 rounded-md transition-colors hover:bg-amber-500/20"
+                  className="inline-flex min-h-8 items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-md transition-colors hover:bg-amber-500/20"
                 >
                   <KeyRound className="w-3 h-3" />
                   {t('chatLanding.configureProvider')}
@@ -388,10 +400,10 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
                     aria-haspopup="menu"
                     aria-expanded={credMenuOpen}
                     aria-label={t('chatLanding.selectCredential')}
-                    className="inline-flex items-center gap-1.5 text-[11px] text-text-muted bg-bg-tertiary px-2 py-1 rounded-md transition-colors hover:text-text"
+                    className="inline-flex min-h-8 max-w-[190px] items-center gap-1.5 text-[11px] text-text-muted bg-bg-tertiary px-2.5 py-1 rounded-md transition-colors hover:text-text"
                   >
                     <KeyRound className="w-3 h-3" />
-                    {credInfo?.slug ?? t('chatLanding.selectCredential')}
+                    <span className="truncate">{credInfo?.label?.trim() || credInfo?.slug || t('chatLanding.selectCredential')}</span>
                     <ChevronDown className="w-3 h-3 opacity-60" />
                   </button>
                   {credMenuOpen && (
@@ -412,7 +424,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
                             }}
                             className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-bg-tertiary ${active ? 'text-accent' : 'text-text'}`}
                           >
-                            <span className="flex-1 truncate">{cr.slug}</span>
+                            <span className="flex-1 truncate">{cr.label?.trim() || cr.slug}</span>
                             <span className="text-[10px] text-text-muted/70 shrink-0">{cr.vendor}</span>
                             {active && <Check className="w-3.5 h-3.5 shrink-0" />}
                           </button>
@@ -423,13 +435,13 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center justify-end gap-1.5">
               <button
                 type="button"
                 disabled
                 title={t('chatLanding.attachSoon')}
                 aria-label={t('chatLanding.attach')}
-                className="w-8 h-8 rounded-lg flex items-center justify-center text-text-muted/50 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="w-10 h-10 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center text-text-muted/50 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Paperclip className="w-4 h-4" />
               </button>
@@ -439,7 +451,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
                 disabled={!canSend}
                 title={t('chatLanding.send')}
                 aria-label={t('chatLanding.send')}
-                className="w-8 h-8 rounded-lg flex items-center justify-center bg-accent text-white transition-colors hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="w-10 h-10 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center bg-accent text-white transition-colors hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {launching ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-4 h-4" />}
               </button>
@@ -514,15 +526,15 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-2 px-1">
-          <span className="text-[11px] text-text-muted/70">{t('chatLanding.examplesLabel')}</span>
+        <div className="scrollbar-hide -mx-4 flex items-center gap-2 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-1 md:pb-0">
+          <span className="shrink-0 text-[11px] text-text-muted/70">{t('chatLanding.examplesLabel')}</span>
           {[t('chatLanding.ex1'), t('chatLanding.ex2'), t('chatLanding.ex3')].map((ex) => (
             <button
               key={ex}
               type="button"
               onClick={() => useExample(ex)}
               disabled={launching}
-              className="text-[12px] text-text-muted bg-bg-secondary/60 border border-border/50 rounded-full px-3 py-1 transition-colors hover:border-accent/40 hover:text-text disabled:opacity-40"
+              className="shrink-0 min-h-8 text-[12px] text-text-muted bg-bg-secondary/60 border border-border/50 rounded-full px-3 py-1 transition-colors hover:border-accent/40 hover:text-text disabled:opacity-40"
             >
               {ex}
             </button>

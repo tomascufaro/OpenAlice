@@ -1,6 +1,7 @@
 import { http, HttpResponse } from 'msw'
 import { demoChatWorkspace, demoWorkspaces, demoTemplates } from '../fixtures/workspaces'
 import { demoWorkspaceFiles } from '../fixtures/inbox'
+import type { WorkspaceMetadataPatch } from '../../components/workspace/api'
 
 export const workspacesHandlers = [
   http.get('/api/workspaces', () => HttpResponse.json({ workspaces: demoWorkspaces })),
@@ -12,6 +13,28 @@ export const workspacesHandlers = [
   ),
   http.delete('/api/workspaces/:id', () => HttpResponse.json(true)),
   http.post('/api/workspaces/:id/stop', () => HttpResponse.json(true)),
+  http.patch('/api/workspaces/:id/metadata', async ({ params, request }) => {
+    const workspace = demoWorkspaces.find((w) => w.id === String(params.id))
+    if (!workspace) return HttpResponse.json({ error: 'not_found' }, { status: 404 })
+    const mutableWorkspace = workspace as { displayName?: string; description?: string }
+
+    const body = (await request.json().catch(() => ({}))) as WorkspaceMetadataPatch
+    if ('displayName' in body) {
+      if (body.displayName == null || body.displayName.trim() === '') {
+        delete mutableWorkspace.displayName
+      } else {
+        mutableWorkspace.displayName = body.displayName.trim()
+      }
+    }
+    if ('description' in body) {
+      if (body.description == null || body.description.trim() === '') {
+        delete mutableWorkspace.description
+      } else {
+        mutableWorkspace.description = body.description.trim()
+      }
+    }
+    return HttpResponse.json({ workspace })
+  }),
 
   http.get('/api/workspaces/templates', () => HttpResponse.json({ templates: demoTemplates })),
   http.get('/api/workspaces/templates/:name/readme', () =>
@@ -38,7 +61,7 @@ export const workspacesHandlers = [
   http.get('/api/workspaces/credentials', () =>
     HttpResponse.json({
       credentials: [
-        { slug: 'openai-1', vendor: 'openai', authType: 'api-key', wires: { 'openai-chat': '' }, lastModel: 'gpt-5.5', apiKey: null },
+        { slug: 'openai-1', vendor: 'openai', label: 'OpenAI', authType: 'api-key', wires: { 'openai-chat': '' }, lastModel: 'gpt-5.5', apiKey: null },
       ],
     }),
   ),

@@ -1,5 +1,8 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { reloadOnHotUpdate } from '../lib/hmr'
+
+reloadOnHotUpdate('live/editor-tabs-pref')
 
 /**
  * Whether the editor-area tab strip (TabStrip) is shown.

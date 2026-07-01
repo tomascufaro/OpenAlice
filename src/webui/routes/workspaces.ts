@@ -24,11 +24,12 @@ const DEFAULT_WIRE_BY_AGENT: Record<string, WireShape> = {
 import { listDir, PathTraversal, readWorkspaceFile } from '../../workspaces/file-service.js';
 import { gitLog, gitStatus } from '../../workspaces/git-service.js';
 import { logger as launcherLogger } from '../../workspaces/logger.js';
+import { readWorkspaceMetadata, workspaceMetadataSchema, writeWorkspaceMetadata } from '../../workspaces/workspace-metadata.js';
 import type { SessionRecord } from '../../workspaces/session-registry.js';
 import type { WorkspaceMeta } from '../../workspaces/workspace-registry.js';
 import { HeadlessCapacityError, resumeFromRecord, type SessionFactoryContext, type WorkspaceService } from '../../workspaces/service.js';
-import type { WorkspaceAiCred } from '../../workspaces/cli-adapter.js';
-import { addCredential, readCredentials, setCredentialLastModel, credentialWires, credentialWireShapeEnum, type Credential } from '../../core/config.js';
+import { isAgentRuntime, type WorkspaceAiCred } from '../../workspaces/cli-adapter.js';
+import { addCredential, readCredentials, readWorkspaceDefaultAgent, setCredentialLastModel, credentialWires, credentialWireShapeEnum, type Credential } from '../../core/config.js';
 import { inferCredentialVendor, resolveAnthropicAuthMode } from '../../core/credential-inference.js';
 import {
   compatibleCredentials,
@@ -129,6 +130,18 @@ type SpawnSessionResult =
 export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
   const app = new Hono();
 
+  const resolveDefaultAgentId = async (meta: WorkspaceMeta): Promise<string | undefined> => {
+    const configured = await readWorkspaceDefaultAgent().catch(() => null);
+    if (configured && meta.agents.includes(configured)) {
+      const adapter = svc.adapters.get(configured);
+      if (adapter && isAgentRuntime(adapter)) return configured;
+    }
+    return meta.agents.find((id) => {
+      const adapter = svc.adapters.get(id);
+      return adapter ? isAgentRuntime(adapter) : false;
+    });
+  };
+
   /**
    * Spawn one interactive PTY session in an existing workspace — the shared
    * core of `POST /:id/sessions/spawn` and `POST /quick-chat` (so the two never
@@ -146,8 +159,12 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     },
   ): Promise<SpawnSessionResult> {
     const id = meta.id;
-    const { agentId, resume, initialPrompt } = opts;
-    if (agentId && !svc.adapters.get(agentId)) {
+    const { resume, initialPrompt } = opts;
+    const agentId = opts.agentId ?? await resolveDefaultAgentId(meta);
+    if (!agentId) {
+      return { ok: false, status: 400, body: { error: 'no_agent_runtime', message: 'workspace has no agent runtime enabled' } };
+    }
+    if (!svc.adapters.get(agentId)) {
       return { ok: false, status: 400, body: { error: 'unknown_agent', message: `no adapter: ${agentId}` } };
     }
     const adapter = svc.resolveAdapter(meta, agentId);
@@ -184,7 +201,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     try {
       const ctx: SessionFactoryContext = {
         ...(resume !== undefined ? { resume } : {}),
-        ...(agentId !== undefined ? { agentId } : {}),
+        agentId,
         ...(initialPrompt !== undefined ? { initialPrompt } : {}),
         recordId,
         recordName,
@@ -378,6 +395,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
         return {
           id: a.id,
           displayName: a.displayName,
+          kind: isAgentRuntime(a) ? 'agent' : 'utility',
           capabilities: a.capabilities,
           installed: av?.installed ?? true,
           binPath: av?.path ?? null,
@@ -437,6 +455,44 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       }, status);
     }
     return c.json({ workspace: await svc.publicMeta(result.workspace) }, 201);
+  });
+
+  app.patch('/:id/metadata', async (c) => {
+    const id = c.req.param('id');
+    if (!validId(id)) return c.json({ error: 'not_found' }, 404);
+    const meta = svc.registry.get(id);
+    if (!meta) return c.json({ error: 'not_found' }, 404);
+
+    const body = await safeJson(c);
+    const fields = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+    const current = await readWorkspaceMetadata(meta.dir);
+    const nextObj: Record<string, unknown> = current.ok ? { ...current.metadata } : {};
+    if ('displayName' in fields) {
+      const v = fields['displayName'];
+      if (v === null) delete nextObj['displayName'];
+      else nextObj['displayName'] = v;
+    }
+    if ('description' in fields) {
+      const v = fields['description'];
+      if (v === null) delete nextObj['description'];
+      else nextObj['description'] = v;
+    }
+    const next = workspaceMetadataSchema.safeParse(nextObj);
+    if (!next.success) {
+      return c.json({
+        error: 'invalid_metadata',
+        message: next.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+      }, 400);
+    }
+    try {
+      await writeWorkspaceMetadata(meta.dir, next.data);
+      launcherLogger.info('workspace.metadata_saved', { id });
+      return c.json({ workspace: await svc.publicMeta(meta) });
+    } catch (err) {
+      if (err instanceof PathTraversal) return c.json({ error: 'invalid_path' }, 400);
+      launcherLogger.warn('workspace.metadata_write_failed', { id, err });
+      return c.json({ error: 'write_failed', message: (err as Error).message }, 500);
+    }
   });
 
   // ── single workspace (DELETE + git/files sub-resources) ──────────────────
@@ -648,7 +704,10 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     // it from the vault before spawn. The dead-end (no compatible credential at
     // all) returns 400 no_ai_credential so the composer bounces to Settings
     // instead of spawning an agent that'll instantly die on a missing key.
-    const effectiveAgent = svc.resolveAdapter(meta, agentId).id;
+    const effectiveAgent = agentId ?? await resolveDefaultAgentId(meta);
+    if (!effectiveAgent) {
+      return c.json({ error: 'no_agent_runtime', message: 'workspace has no agent runtime enabled' }, 400);
+    }
     if (LOGINLESS_AGENTS.has(effectiveAgent)) {
       const inject = await injectLoginlessCredential(meta, effectiveAgent, credentialSlug);
       if (!inject.ok) return c.json(inject.body, inject.status as 400);
@@ -1079,11 +1138,16 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     // An explicit agent must be one ENABLED on this workspace — else
     // resolveAdapter would honor it and spawn a CLI with no provider config
     // injected (silent fallback to the user's global config). Omitting `agent`
-    // (→ workspace default) stays fine.
+    // resolves through the user default / first enabled agent runtime, never
+    // through utility adapters such as shell.
     if (agentId && !meta.agents.includes(agentId)) {
       return c.json({ error: 'agent_not_enabled', message: `agent "${agentId}" not enabled on this workspace` }, 400);
     }
-    const adapter = svc.resolveAdapter(meta, agentId);
+    const effectiveAgentId = agentId ?? await resolveDefaultAgentId(meta);
+    if (!effectiveAgentId) {
+      return c.json({ error: 'no_agent_runtime', message: 'workspace has no agent runtime enabled' }, 400);
+    }
+    const adapter = svc.resolveAdapter(meta, effectiveAgentId);
     if (!adapter.capabilities.headless || !adapter.composeHeadlessCommand) {
       return c.json({ error: 'no_headless', message: `adapter "${adapter.id}" has no headless mode` }, 400);
     }
@@ -1172,6 +1236,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       const list = entries.map(([slug, cred]) => ({
         slug,
         vendor: cred.vendor,
+        ...(cred.label ? { label: cred.label } : {}),
         authType: cred.authType,
         wires: credentialWires(cred), // shape → endpoint; the modal picks one per agent
         ...(cred.lastModel ? { lastModel: cred.lastModel } : {}),
@@ -1186,17 +1251,19 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
 
   app.post('/credentials', async (c) => {
     const body = (await safeJson(c)) as
-      | { apiKey?: string; baseUrl?: string; agent?: string; vendor?: string; wireShape?: string }
+      | { apiKey?: string; baseUrl?: string; agent?: string; vendor?: string; label?: string; wireShape?: string }
       | null;
     const apiKey = body?.apiKey?.trim();
     if (!apiKey) return c.json({ error: 'apiKey_required' }, 400);
     const baseUrl = body?.baseUrl?.trim() || undefined;
+    const label = body?.label?.trim();
     const wireParse = credentialWireShapeEnum.safeParse(body?.wireShape);
     // The workspace modal saves a single hand-entered shape; capture it as a
     // one-entry wires map (the vault can later add more shapes for the same key —
     // dedup-by-key upgrades in place). Subscriptions never flow through here.
     const cred: Credential = {
       vendor: inferCredentialVendor({ agent: body?.agent, baseUrl }),
+      ...(label ? { label } : {}),
       authType: 'api-key',
       apiKey,
       ...(wireParse.success ? { wires: { [wireParse.data]: baseUrl ?? '' } } : (baseUrl ? { wires: {} } : {})),

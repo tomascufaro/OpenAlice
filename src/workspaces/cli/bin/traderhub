@@ -81,9 +81,20 @@ async function manifest(base) {
 }
 
 async function invoke(base, tool, args) {
+  // Agent-invisible identity, forwarded out-of-band as a header — NOT in the
+  // tool args, NOT in the path — so the gateway can server-side-resolve the
+  // entry's origin without the agent ever trafficking its own identity. The
+  // launcher injects exactly one per spawn (mirrors how it injects AQ_WS_ID for
+  // the path): AQ_RUN_ID on a HEADLESS spawn, AQ_SESSION_ID on an INTERACTIVE
+  // one. So at most one of these headers is ever sent.
+  const headers = { 'Content-Type': 'application/json' }
+  const runId = process.env.AQ_RUN_ID
+  if (runId) headers['x-openalice-run'] = runId
+  const sessionId = process.env.AQ_SESSION_ID
+  if (sessionId) headers['x-openalice-session'] = sessionId
   const r = await fetchJson(base + '/invoke', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ tool, args }),
   })
   if (!r.ok) {

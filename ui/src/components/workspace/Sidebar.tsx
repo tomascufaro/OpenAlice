@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatRelativeTime } from '../../lib/intl';
 import type { ReactElement } from 'react';
-import { Bot, ChevronDown, ChevronRight, Code2, Cpu, LayoutGrid, Library, Play, Plus, Settings as SettingsIcon, Sparkles, Square, Terminal, X, type LucideIcon } from 'lucide-react';
+import { Bot, ChevronDown, ChevronRight, Code2, Cpu, LayoutGrid, Library, Pencil, Play, Plus, Settings as SettingsIcon, Sparkles, Square, Terminal, X, type LucideIcon } from 'lucide-react';
 
 import { headlessApi, type HeadlessTaskRecord } from '../../api/headless';
 import {
@@ -12,6 +12,8 @@ import {
   type Workspace,
 } from './api';
 import { CreateWorkspaceDialog } from './CreateWorkspaceDialog';
+import { Skeleton } from '../StateViews';
+import { workspaceDisplayName, workspaceDisplayTitle } from './display';
 
 /**
  * Workspace launcher sidebar.
@@ -42,15 +44,21 @@ export interface SidebarProps {
   readonly workspaces: readonly Workspace[];
   readonly templates: readonly TemplateInfo[];
   readonly agents: readonly AgentInfo[];
+  readonly defaultAgent: string | null;
   readonly listError: string | null;
+  /** True once the first workspaces-list fetch has resolved — gates the empty
+   *  state vs. a cold-load skeleton. */
+  readonly hasLoaded: boolean;
   readonly selection: Selection | null;
   readonly onSelectWorkspace: (wsId: string) => void;
   readonly onSelectSession: (wsId: string, sessionId: string) => void;
   readonly onSpawn: (wsId: string, opts?: SpawnOpts) => void;
+  readonly onSetDefaultAgent: (agent: string | null) => void;
   readonly onPauseSession: (wsId: string, sessionId: string) => void;
   readonly onResumeSession: (wsId: string, sessionId: string) => void;
   readonly onDeleteSession: (wsId: string, sessionId: string) => void;
   readonly onChanged: () => void;
+  readonly onRenameWorkspace?: (wsId: string, displayName: string) => void;
   /** Optional: open the per-workspace AI-provider config modal. */
   readonly onConfigureWorkspace?: (wsId: string) => void;
   /** Open the Workspaces Overview dashboard tab (card view of all workspaces). */
@@ -151,7 +159,17 @@ export function Sidebar(props: SidebarProps): ReactElement {
         />
       )}
 
-      {props.workspaces.length === 0 && !props.listError && (
+      {!props.hasLoaded && !props.listError && (
+        <div className="flex flex-col mt-0.5" aria-hidden="true">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-2 px-3 py-2">
+              <Skeleton className="h-4 w-4 rounded" />
+              <Skeleton className={`h-3 ${i % 2 === 0 ? 'w-32' : 'w-24'}`} />
+            </div>
+          ))}
+        </div>
+      )}
+      {props.hasLoaded && props.workspaces.length === 0 && !props.listError && (
         <div className="px-3 py-2 text-[12px] text-text-muted/60">No workspaces yet</div>
       )}
       {props.listError && <div className="px-3 py-2 text-[12px] text-red">{props.listError}</div>}
@@ -162,15 +180,18 @@ export function Sidebar(props: SidebarProps): ReactElement {
             key={w.id}
             workspace={w}
             agents={props.agents}
+            defaultAgent={props.defaultAgent}
             selection={props.selection}
             headlessTasks={headlessByWs.get(w.id) ?? []}
             onSelectWorkspace={props.onSelectWorkspace}
             onSelectSession={props.onSelectSession}
             onSpawn={props.onSpawn}
+            onSetDefaultAgent={props.onSetDefaultAgent}
             onPauseSession={props.onPauseSession}
             onResumeSession={props.onResumeSession}
             onDeleteSession={props.onDeleteSession}
             onDelete={onDelete}
+            onRenameWorkspace={props.onRenameWorkspace}
             onConfigureWorkspace={props.onConfigureWorkspace}
           />
         ))}
@@ -209,16 +230,19 @@ function NavRow({
 export interface WorkspaceRowProps {
   readonly workspace: Workspace;
   readonly agents: readonly AgentInfo[];
+  readonly defaultAgent: string | null;
   readonly selection: Selection | null;
   /** This workspace's headless (automation) runs, newest-first. */
   readonly headlessTasks?: readonly HeadlessTaskRecord[];
   readonly onSelectWorkspace: (wsId: string) => void;
   readonly onSelectSession: (wsId: string, sessionId: string) => void;
   readonly onSpawn: (wsId: string, opts?: SpawnOpts) => void;
+  readonly onSetDefaultAgent: (agent: string | null) => void;
   readonly onPauseSession: (wsId: string, sessionId: string) => void;
   readonly onResumeSession: (wsId: string, sessionId: string) => void;
   readonly onDeleteSession: (wsId: string, sessionId: string) => void;
   readonly onDelete: (id: string) => Promise<void>;
+  readonly onRenameWorkspace?: (wsId: string, displayName: string) => void;
   readonly onConfigureWorkspace?: (wsId: string) => void;
 }
 
@@ -264,6 +288,7 @@ function rowAction(danger = false): string {
 
 export function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
   const w = props.workspace;
+  const label = workspaceDisplayName(w);
   const isSelected = props.selection?.wsId === w.id && props.selection.sessionId === null;
   const hasRunning = w.sessions.some((s) => s.state === 'running');
   const runningCount = w.sessions.filter((s) => s.state === 'running').length;
@@ -271,6 +296,14 @@ export function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
   const [spawnMenuOpen, setSpawnMenuOpen] = useState(false);
   const plusBtnRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLUListElement | null>(null);
+  const enabledAgents = w.agents
+    .map((id) => props.agents.find((a) => a.id === id))
+    .filter((a): a is AgentInfo => !!a);
+  const runtimeAgents = enabledAgents.filter((a) => a.kind !== 'utility');
+  const utilityAgents = enabledAgents.filter((a) => a.kind === 'utility');
+  const defaultAgentEnabled =
+    props.defaultAgent !== null &&
+    runtimeAgents.some((a) => a.id === props.defaultAgent);
 
   useEffect(() => {
     if (!spawnMenuOpen) return;
@@ -293,8 +326,8 @@ export function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
   }, [spawnMenuOpen]);
 
   const onPlusClick = (): void => {
-    if (w.agents.length <= 1) {
-      props.onSpawn(w.id, { agent: w.agents[0] ?? 'claude' });
+    if (defaultAgentEnabled && props.defaultAgent) {
+      props.onSpawn(w.id, { agent: props.defaultAgent });
       return;
     }
     setSpawnMenuOpen((v) => !v);
@@ -302,12 +335,14 @@ export function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
 
   const onMenuPick = (agentId: string): void => {
     setSpawnMenuOpen(false);
+    const agent = props.agents.find((a) => a.id === agentId);
+    if (agent && agent.kind !== 'utility') props.onSetDefaultAgent(agentId);
     props.onSpawn(w.id, { agent: agentId });
   };
 
   const plusTitle =
-    w.agents.length === 1
-      ? `spawn a new ${agentLabel(w.agents[0]!, props.agents)} session`
+    defaultAgentEnabled && props.defaultAgent
+      ? `spawn a new ${agentLabel(props.defaultAgent, props.agents)} session`
       : 'spawn a new session…';
 
   const statusClass = hasRunning
@@ -327,24 +362,40 @@ export function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
         <button
           type="button"
           onClick={() => props.onSelectWorkspace(w.id)}
-          title={w.tag}
+          title={workspaceDisplayTitle(w)}
           className="flex-1 min-w-0 flex items-center gap-2 text-left"
         >
           <span
             className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusClass}`}
             title={hasRunning ? `${runningCount} running` : 'idle'}
           />
-          <span className="truncate font-medium">{w.tag}</span>
+          <span className="truncate font-medium">{label}</span>
           <span className="text-[10px] text-text-muted/50 tabular-nums shrink-0">{formatRelativeTime(w.createdAt)}</span>
         </button>
-        {w.agents.length > 0 && (
+        {props.onRenameWorkspace && (
+          <button
+            type="button"
+            className={`${rowAction()} opacity-0 group-hover:opacity-100 focus-visible:opacity-100`}
+            title="rename workspace"
+            onClick={() => {
+              const next = window.prompt('Workspace display name', label);
+              if (next === null) return;
+              const trimmed = next.trim();
+              if (trimmed.length === 0 || trimmed === label) return;
+              props.onRenameWorkspace?.(w.id, trimmed);
+            }}
+          >
+            <Pencil size={12} strokeWidth={2} />
+          </button>
+        )}
+        {enabledAgents.length > 0 && (
           <div className="relative shrink-0">
             <button
               ref={plusBtnRef}
               type="button"
               className={rowAction()}
               title={plusTitle}
-              aria-haspopup={w.agents.length > 1}
+              aria-haspopup="menu"
               aria-expanded={spawnMenuOpen}
               onClick={onPlusClick}
             >
@@ -356,17 +407,34 @@ export function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
                 role="menu"
                 className="absolute right-0 top-full mt-1 min-w-[170px] py-1 bg-bg-secondary border border-border/70 rounded-lg shadow-lg z-10"
               >
-                {w.agents.map((agentId) => (
-                  <li key={agentId}>
+                {runtimeAgents.map((agent) => (
+                  <li key={agent.id}>
                     <button
                       type="button"
                       role="menuitem"
                       className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left text-text transition-colors hover:bg-bg-tertiary"
-                      onClick={() => onMenuPick(agentId)}
+                      onClick={() => onMenuPick(agent.id)}
                     >
                       <Plus size={12} strokeWidth={2.25} className="shrink-0 text-text-muted" />
-                      <span className="flex-1 truncate">{agentLabel(agentId, props.agents)}</span>
-                      <span className="text-[10px] font-mono text-text-muted/60">{agentPrefix(agentId)}</span>
+                      <span className="flex-1 truncate">{agent.displayName}</span>
+                      <span className="text-[10px] font-mono text-text-muted/60">{agentPrefix(agent.id)}</span>
+                    </button>
+                  </li>
+                ))}
+                {runtimeAgents.length > 0 && utilityAgents.length > 0 && (
+                  <li aria-hidden="true" className="my-1 border-t border-border/70" />
+                )}
+                {utilityAgents.map((agent) => (
+                  <li key={agent.id}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text"
+                      onClick={() => onMenuPick(agent.id)}
+                    >
+                      <Terminal size={12} strokeWidth={2.25} className="shrink-0 text-text-muted" />
+                      <span className="flex-1 truncate">{agent.displayName}</span>
+                      <span className="text-[10px] font-mono text-text-muted/60">{agentPrefix(agent.id)}</span>
                     </button>
                   </li>
                 ))}
@@ -378,7 +446,7 @@ export function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
           <button
             type="button"
             className={`${rowAction()} opacity-0 group-hover:opacity-100 focus-visible:opacity-100`}
-            title="configure AI provider for this workspace"
+            title="Configure this workspace"
             onClick={() => props.onConfigureWorkspace?.(w.id)}
           >
             <SettingsIcon size={12} strokeWidth={2} />

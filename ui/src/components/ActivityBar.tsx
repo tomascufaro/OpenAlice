@@ -1,4 +1,4 @@
-import { type LucideIcon, MessageSquare, Inbox, Telescope, LineChart, GitBranch, BarChart3, Newspaper, Zap, Settings, Code2, TerminalSquare, ChevronDown, Info } from 'lucide-react'
+import { type LucideIcon, MessageSquare, Inbox, Telescope, LineChart, GitBranch, BarChart3, Newspaper, Zap, Settings, Code2, TerminalSquare, ChevronDown, Info, ListChecks } from 'lucide-react'
 import { useState } from 'react'
 import { type Page } from '../App'
 import { findSectionForActivity } from '../sections'
@@ -25,6 +25,7 @@ function activitySectionFor(page: Page): ActivitySection {
     case 'dev':                  return 'dev'
     case 'market':               return 'market'
     case 'portfolio':            return 'portfolio'
+    case 'issue':                return 'issue'
     case 'automation':           return 'automation'
     case 'news':                 return 'news'
   }
@@ -55,7 +56,7 @@ interface ActivityBarProps {
 
 type NavItemKey =
   | 'nav.item.inbox' | 'nav.item.tracked' | 'nav.item.chat' | 'nav.item.workspaces'
-  | 'nav.item.market' | 'nav.item.news' | 'nav.item.tradingAsGit'
+  | 'nav.item.market' | 'nav.item.news' | 'nav.item.tradingAsGit' | 'nav.item.issue'
   | 'nav.item.portfolio' | 'nav.item.automation' | 'nav.item.settings' | 'nav.item.dev'
 
 interface NavLeaf {
@@ -117,19 +118,20 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { page: 'chat',       labelKey: 'nav.item.chat',       icon: MessageSquare, defaultTab: { kind: 'chat-landing', params: {} } },
       { page: 'inbox',      labelKey: 'nav.item.inbox',      icon: Inbox, defaultTab: { kind: 'inbox', params: {} } },
+      { page: 'issue',      labelKey: 'nav.item.issue',      icon: ListChecks, defaultTab: { kind: 'issue', params: {} } },
       { page: 'tracked',    labelKey: 'nav.item.tracked',    icon: Telescope, defaultTab: { kind: 'tracked', params: {} } },
       { page: 'market',     labelKey: 'nav.item.market',     icon: BarChart3 },
       { page: 'news',       labelKey: 'nav.item.news',       icon: Newspaper, defaultTab: { kind: 'news', params: {} } },
       { page: 'workspaces', labelKey: 'nav.item.workspaces', icon: TerminalSquare },
-      { page: 'automation', labelKey: 'nav.item.automation', icon: Zap, defaultTab: { kind: 'automation', params: { section: 'schedules' } } },
     ],
   },
   // Beta — functional but not yet dependable. Cross-broker unification
   // (UTA abstraction, FX/options/futures) is in active rearchitecture:
   // Portfolio surfaces that state, Trading-as-Git is the operations side
   // (pending broker writes). The data runs; the schema/UX underneath isn't
-  // settled. (Automation graduated to the top group once its self-scheduling
-  // trigger chain closed end-to-end.) Broker connection CRUD lives under
+  // settled. (Scheduled work now surfaces on the Issues board in the top group;
+  // Automation moved down to System as the headless-run / API / event-bus ops
+  // side.) Broker connection CRUD lives under
   // Settings → Trading, not here — it's a config surface, not state/ops.
   {
     sectionLabel: 'Beta',
@@ -144,6 +146,11 @@ const NAV_SECTIONS: NavSection[] = [
     sectionLabel: 'System',
     labelKey: 'nav.section.system',
     items: [
+      // Automation lives here now: Issues (the board) is the primary
+      // management surface, and scheduled issues fire from there. Automation
+      // is the operations/plumbing side (headless runs, API, event bus) —
+      // System chrome, not a daily-driver nav target.
+      { page: 'automation', labelKey: 'nav.item.automation', icon: Zap, defaultTab: { kind: 'automation', params: { section: 'runs' } } },
       { page: 'settings', labelKey: 'nav.item.settings', icon: Settings },
       { page: 'dev',      labelKey: 'nav.item.dev',      icon: Code2 },
     ],
@@ -153,10 +160,8 @@ const NAV_SECTIONS: NavSection[] = [
 // ==================== ActivityBar ====================
 
 /**
- * Linear-style left nav. 200px wide on desktop; on mobile (<md) it
- * slides in over the page from the left as a 280px drawer (matching
- * the secondary drawer so a drill-in doesn't jump width), on desktop
- * it's a static column. The recessed-rail look comes from bg-tertiary
+ * Linear-style left nav. Mobile uses a drawer; desktop keeps a compact
+ * text rail. The recessed-rail look comes from bg-tertiary
  * (one elevation step up from the secondary Sidebar and the base main
  * pane) — rail → sidebar → main read as three distinct tiers. Top
  * section (no header) is the pinned-nav block — Chat, Inbox,
@@ -193,7 +198,7 @@ export function ActivityBar({ open, onClose, onItemActivated, sidebarVisible = t
        *  page with backdrop. Desktop: static column flush left. */}
       <aside
         className={`
-          w-[280px] md:w-[200px] h-full flex flex-col shrink-0
+          w-[280px] md:w-[188px] h-full flex flex-col shrink-0
           bg-bg-tertiary
           border-r border-border/80
           fixed z-50 top-0 left-0 transition-transform duration-200
@@ -285,7 +290,7 @@ export function ActivityBar({ open, onClose, onItemActivated, sidebarVisible = t
                           type="button"
                           onClick={handleClick}
                           title={t(item.labelKey)}
-                          className={`relative flex items-center gap-3 px-3 py-1.5 rounded-md text-[13px] transition-colors text-left ${
+                          className={`relative flex min-h-[34px] items-center gap-3 rounded-md px-3 py-1.5 text-[13px] transition-colors text-left ${
                             isActive
                               ? 'bg-accent-dim text-text'
                               : 'text-text-muted hover:text-text hover:bg-overlay'
@@ -378,9 +383,10 @@ function SectionHeader({
         <button
           type="button"
           onClick={onToggleCollapse}
-          className="flex-1 flex items-center gap-1.5 py-1 text-[12px] font-semibold text-text-muted/75 hover:text-text-muted transition-colors text-left"
+          className="flex-1 flex min-h-7 items-center gap-1.5 py-1 text-[12px] font-semibold text-text-muted/75 hover:text-text-muted transition-colors text-left"
           aria-expanded={!isCollapsed}
           aria-controls={controlsId}
+          title={label}
         >
           <ChevronDown
             size={12}
@@ -396,7 +402,7 @@ function SectionHeader({
           <button
             type="button"
             onClick={() => setHintOpen((o) => !o)}
-            className={`flex items-center justify-center p-0.5 transition-colors ${
+            className={`flex min-h-7 min-w-7 items-center justify-center p-0.5 transition-colors ${
               hintOpen ? 'text-text-muted' : 'text-text-muted/50 hover:text-text-muted'
             }`}
             aria-label={t('nav.about', { label })}

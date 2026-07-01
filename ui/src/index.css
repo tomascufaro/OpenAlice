@@ -11,17 +11,17 @@
    (ui/src/theme) and mirrored pre-paint by the inline script in index.html.
    ============================================================ */
 @theme {
-  /* Daybreak — light (default). Cream paper · engraved navy · alice-blue. */
-  --color-bg: #f7f4ec;
-  --color-bg-secondary: #f0ebdd;
-  --color-bg-tertiary: #e5decb;
-  --color-border: #d8d0bc;
+  /* Daybreak — light (default). Warm paper · engraved navy · alice-blue. */
+  --color-bg: #fbfaf6;
+  --color-bg-secondary: #f1ede4;
+  --color-bg-tertiary: #e4dccb;
+  --color-border: #d8d2c4;
   --color-text: #1c2a41;
   --color-text-muted: #5e6573;
   --color-accent: #2f62b0;
   --color-accent-dim: rgba(47, 98, 176, 0.14);
   --color-user-bubble: #2f62b0;
-  --color-assistant-bubble: #fbf8f0;
+  --color-assistant-bubble: #fffdf8;
   --color-notification-bg: #fbf1d6;
   --color-notification-border: #c99a2e;
   --color-green: #2e8b6f;
@@ -32,8 +32,8 @@
   /* Elevation overlays — theme-aware "subtle wash on hover / active".
      Light darkens with navy ink; dark lightens with white. Components use
      `bg-overlay` / `bg-overlay-strong`; raw CSS uses `var(--color-overlay)`. */
-  --color-overlay: rgba(28, 42, 65, 0.05);
-  --color-overlay-strong: rgba(28, 42, 65, 0.085);
+  --color-overlay: rgba(28, 42, 65, 0.045);
+  --color-overlay-strong: rgba(28, 42, 65, 0.075);
 
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
@@ -131,6 +131,7 @@ body,
 body {
   background: var(--app-bg-wash), var(--color-bg);
   color: var(--color-text);
+  overflow: hidden;
   transition: background-color 0.4s ease, color 0.4s ease;
 }
 
@@ -193,6 +194,35 @@ body {
   opacity: 0.3;
   animation: live-pulse 2.4s ease-in-out infinite;
   animation-delay: 0.3s;
+}
+
+/* Skeleton placeholder — theme-aware shimmer for first-load states. The block
+   is the tertiary surface (reads on both the page bg and bg-secondary cards); a
+   soft overlay band sweeps across at an ambient cadence (sibling to live-pulse's
+   2.4s, a touch quicker so it reads as "loading" without feeling anxious). Size
+   + radius come from the element's own utility classes. Honors reduced motion. */
+@keyframes skeleton-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.skeleton {
+  background-color: var(--color-bg-tertiary);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-overlay-strong) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: skeleton-sweep 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background-image: none;
+    opacity: 0.7;
+  }
 }
 
 /* ==================== Button utility classes ==================== */

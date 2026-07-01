@@ -36,9 +36,13 @@ export function UrlAdopter() {
             /chat/:channelId (the retired traditional-chat channels) still
             redirects to Inbox so stale bookmarks land on a live surface. */}
         <Route path="/chat" element={<AdoptStatic spec={{ kind: 'chat-landing', params: {} }} />} />
+        <Route path="/chat/workspaces/:wsId" element={<AdoptChatWorkspace />} />
+        <Route path="/chat/workspaces/:wsId/s/:sessionId" element={<AdoptChatWorkspace />} />
         <Route path="/chat/:channelId" element={<Navigate to="/inbox" replace />} />
         <Route path="/portfolio" element={<AdoptStatic spec={{ kind: 'portfolio', params: {} }} />} />
-        <Route path="/automation" element={<Navigate to="/automation/schedules" replace />} />
+        <Route path="/issues" element={<AdoptStatic spec={{ kind: 'issue', params: {} }} />} />
+        <Route path="/issues/:wsId/:id" element={<AdoptIssueDetail />} />
+        <Route path="/automation" element={<Navigate to="/automation/runs" replace />} />
         <Route path="/automation/:section" element={<AdoptAutomation />} />
         <Route path="/news" element={<AdoptStatic spec={{ kind: 'news', params: {} }} />} />
         <Route path="/market" element={<AdoptStatic spec={{ kind: 'market-list', params: {} }} />} />
@@ -73,6 +77,7 @@ export function UrlAdopter() {
 
         {/* Tracked (entity index) */}
         <Route path="/tracked" element={<AdoptStatic spec={{ kind: 'tracked', params: {} }} />} />
+        <Route path="/tracked/issues/:wsId/:id" element={<AdoptTrackedIssueDetail />} />
 
         {/* Workspaces */}
         <Route path="/workspaces" element={<AdoptStatic spec={{ kind: 'workspace-list', params: {} }} />} />
@@ -90,7 +95,10 @@ export function UrlAdopter() {
         <Route path="/logs" element={<Navigate to="/dev/logs" replace />} />
         <Route path="/events" element={<Navigate to="/dev/logs" replace />} />
         <Route path="/agent-status" element={<Navigate to="/dev/logs" replace />} />
-        <Route path="/scheduler" element={<Navigate to="/automation/schedules" replace />} />
+        {/* Schedules were absorbed into the Issue board — scheduled issues now
+            live there (carrying a cadence pill). */}
+        <Route path="/scheduler" element={<Navigate to="/issues" replace />} />
+        <Route path="/automation/schedules" element={<Navigate to="/issues" replace />} />
         <Route path="/ai-provider" element={<Navigate to="/settings/ai-provider" replace />} />
         <Route path="/trading" element={<Navigate to="/settings/trading" replace />} />
         <Route path="/trading-accounts" element={<Navigate to="/settings/trading" replace />} />
@@ -154,6 +162,18 @@ function AdoptMarketBoard() {
   )
 }
 
+function AdoptIssueDetail() {
+  const { wsId, id } = useParams<{ wsId: string; id: string }>()
+  if (!wsId || !id) return <Navigate to="/issues" replace />
+  return <AdoptStatic spec={{ kind: 'issue-detail', params: { wsId, id } }} />
+}
+
+function AdoptTrackedIssueDetail() {
+  const { wsId, id } = useParams<{ wsId: string; id: string }>()
+  if (!wsId || !id) return <Navigate to="/tracked" replace />
+  return <AdoptStatic spec={{ kind: 'tracked-issue-detail', params: { wsId, id } }} />
+}
+
 function AdoptUtaDetail() {
   const { id } = useParams<{ id: string }>()
   if (!id) return <Navigate to="/settings/trading" replace />
@@ -176,8 +196,8 @@ function AdoptDev() {
 
 function AdoptAutomation() {
   const { section } = useParams<{ section: string }>()
-  const valid: ReadonlyArray<string> = ['schedules', 'runs', 'api', 'flow', 'webhook']
-  if (!section || !valid.includes(section)) return <Navigate to="/automation/schedules" replace />
+  const valid: ReadonlyArray<string> = ['runs', 'api', 'flow', 'webhook']
+  if (!section || !valid.includes(section)) return <Navigate to="/automation/runs" replace />
   return (
     <AdoptStatic
       spec={{
@@ -191,7 +211,15 @@ function AdoptAutomation() {
 function AdoptWorkspace() {
   const { wsId, sessionId } = useParams<{ wsId: string; sessionId?: string }>()
   if (!wsId) return <Navigate to="/workspaces" replace />
-  const params: { wsId: string; sessionId?: string } = { wsId }
+  const params: Extract<ViewSpec, { kind: 'workspace' }>['params'] = { wsId }
+  if (sessionId) params.sessionId = sessionId
+  return <AdoptStatic spec={{ kind: 'workspace', params }} />
+}
+
+function AdoptChatWorkspace() {
+  const { wsId, sessionId } = useParams<{ wsId: string; sessionId?: string }>()
+  if (!wsId) return <Navigate to="/chat" replace />
+  const params: Extract<ViewSpec, { kind: 'workspace' }>['params'] = { wsId, source: 'chat' }
   if (sessionId) params.sessionId = sessionId
   return <AdoptStatic spec={{ kind: 'workspace', params }} />
 }
@@ -242,14 +270,17 @@ function specToSection(spec: ViewSpec): ActivitySection {
   switch (spec.kind) {
     case 'inbox':              return 'inbox'
     case 'tracked':            return 'tracked'
+    case 'tracked-issue-detail': return 'tracked'
     case 'chat-landing':       return 'chat'
-    case 'workspace':
+    case 'workspace':          return spec.params.source === 'chat' ? 'chat' : 'workspaces'
     case 'workspace-list':
     case 'template-catalog':
     case 'template-detail':
     case 'file-viewer':        return 'workspaces'
     case 'portfolio':
     case 'uta-detail':         return 'portfolio'
+    case 'issue':
+    case 'issue-detail':       return 'issue'
     case 'automation':         return 'automation'
     case 'news':               return 'news'
     case 'market-list':

@@ -9,6 +9,12 @@ import type { WireShape } from '../../api'
 export interface Workspace {
   readonly id: string;
   readonly tag: string;
+  /** Workspace-owned display label from `.alice/workspace.json`; falls back to `tag`. */
+  readonly displayName?: string;
+  /** Workspace-owned short description from `.alice/workspace.json`. */
+  readonly description?: string;
+  /** Validation/read error for `.alice/workspace.json`, when present. */
+  readonly metadataError?: string;
   readonly dir: string;
   readonly createdAt: string;
   readonly template?: string;
@@ -32,7 +38,7 @@ export interface Workspace {
    * launcher applies migrations. Agent self-upgrade is the resolution path.
    */
   readonly upgradeAvailable?: { from: string; to: string } | null;
-  /** Adapter ids enabled for this workspace; agents[0] is the default for `+`. */
+  /** Adapter ids enabled for this workspace. Default runtime lives in user config. */
   readonly agents: readonly string[];
   /**
    * Single ordered list of all session records (running + paused) the
@@ -169,6 +175,7 @@ export interface AgentCapabilities {
 export interface AgentInfo {
   readonly id: string;
   readonly displayName: string;
+  readonly kind?: 'agent' | 'utility';
   readonly capabilities: AgentCapabilities;
   /**
    * Whether the runtime's CLI was found on the host PATH. Backend-probed per
@@ -185,6 +192,27 @@ export async function listAgents(): Promise<AgentInfo[]> {
   if (!res.ok) throw new Error(`list agents failed: ${res.status}`);
   const body = (await res.json()) as { agents: AgentInfo[] };
   return body.agents;
+}
+
+export async function getWorkspaceDefaultAgent(): Promise<string | null> {
+  const res = await fetch('/api/config/workspace-default-agent');
+  if (!res.ok) return null;
+  const body = (await res.json()) as { agent?: string | null };
+  return body.agent ?? null;
+}
+
+export async function setWorkspaceDefaultAgent(agent: string | null): Promise<string | null> {
+  const res = await fetch('/api/config/workspace-default-agent', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent }),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => '');
+    throw new Error(`set workspace default agent failed: ${res.status} ${msg}`);
+  }
+  const body = (await res.json()) as { agent?: string | null };
+  return body.agent ?? null;
 }
 
 // ── sessions ─────────────────────────────────────────────────────────────────
@@ -223,7 +251,7 @@ export interface SpawnedSession {
 export interface SpawnOptions {
   /** `'last'` → adapter-specific "continue", any UUID → adapter-specific resume-by-id. */
   readonly resume?: 'last' | string;
-  /** Override workspace's default adapter (workspace.agents[0]). */
+  /** Explicit runtime/tool adapter for this spawn. */
   readonly agent?: string;
   /**
    * Seed a FRESH session with a first user message — the quick-chat launch
@@ -337,6 +365,25 @@ export async function deleteWorkspace(id: string): Promise<boolean> {
     method: 'DELETE',
   });
   return res.ok;
+}
+
+export type WorkspaceMetadataPatch = { displayName?: string | null; description?: string | null };
+
+export async function updateWorkspaceMetadata(
+  id: string,
+  metadata: WorkspaceMetadataPatch,
+): Promise<Workspace> {
+  const res = await fetch(`/api/workspaces/${encodeURIComponent(id)}/metadata`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(metadata),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => '');
+    throw new Error(`update workspace metadata failed: ${res.status} ${msg}`);
+  }
+  const body = (await res.json()) as { workspace: Workspace };
+  return body.workspace;
 }
 
 /**
@@ -480,6 +527,7 @@ export type AgentId = 'claude' | 'codex' | 'opencode' | 'pi';
 export interface SavedCredential {
   readonly slug: string;
   readonly vendor: string;
+  readonly label?: string;
   readonly authType: 'api-key' | 'subscription';
   /** Wire capabilities: each shape this key speaks → its endpoint baseUrl. */
   readonly wires: Partial<Record<WireShape, string>>;
@@ -521,6 +569,7 @@ export async function saveCredential(input: {
   apiKey: string;
   baseUrl?: string;
   agent?: AgentId;
+  label?: string;
   wireShape?: WireShape;
 }): Promise<{ slug: string; vendor: string }> {
   const res = await fetch('/api/workspaces/credentials', {

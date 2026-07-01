@@ -1,6 +1,9 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { ActivitySection } from '../tabs/types'
+import { reloadOnHotUpdate } from '../lib/hmr'
+
+reloadOnHotUpdate('live/sidebar-width')
 
 /**
  * Per-activity secondary-sidebar width.

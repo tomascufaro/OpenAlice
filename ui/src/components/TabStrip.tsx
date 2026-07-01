@@ -1,6 +1,6 @@
 import { useState, type MouseEvent, type WheelEvent } from 'react'
 import { X } from 'lucide-react'
-import { useWorkspaces } from '../contexts/WorkspacesContext'
+import { useWorkspaces } from '../contexts/workspaces-context'
 import { useWorkspace } from '../tabs/store'
 import { getView } from '../tabs/registry'
 import { useEditorTabsPref } from '../live/editor-tabs-pref'

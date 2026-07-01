@@ -3,11 +3,15 @@ import type { Workspace } from '../components/workspace/api'
 import type { ViewKind, ViewSpec } from './types'
 
 import { PortfolioPage } from '../pages/PortfolioPage'
+import { IssuePage } from '../pages/IssuePage'
+import { IssueDetailPage } from '../pages/IssueDetailPage'
+import { TrackedIssueDetailPage } from '../pages/TrackedIssueDetailPage'
 import { AutomationPage } from '../pages/AutomationPage'
 import { NewsPage } from '../pages/NewsPage'
 import { MarketPage } from '../pages/MarketPage'
 import { MarketRotationPage } from '../pages/MarketRotationPage'
-import { MarketBoardPage, MARKET_BOARD_TITLES } from '../pages/MarketBoardPage'
+import { MarketBoardPage } from '../pages/MarketBoardPage'
+import { MARKET_BOARD_TITLES } from '../pages/market-board-titles'
 import { MarketDetailPage } from '../pages/MarketDetailPage'
 import { SettingsPage } from '../pages/SettingsPage'
 import { AIProviderPage } from '../pages/AIProviderPage'
@@ -46,12 +50,24 @@ interface ViewProps<K extends ViewKind> {
   visible: boolean
 }
 
+export type ViewLifecycle = 'active-only' | 'keep-mounted'
+
 export interface ViewModule<K extends ViewKind> {
   kind: K
   /** Tab title — derived from spec each render so e.g. channel renames propagate. */
   title(spec: Extract<ViewSpec, { kind: K }>, ctx: TitleCtx): string
   /** URL the active tab projects onto window.location (via replaceState). */
   toUrl(spec: Extract<ViewSpec, { kind: K }>): string
+  /**
+   * Runtime policy while the view's tab is not focused.
+   *
+   * Default is `active-only`: the tab store remembers navigation state, but
+   * the component unmounts when hidden. This matches the post-editor-tabs UI
+   * where tabs are lightweight history/bookmarks, not VS-Code-style runtime
+   * containers. Use `keep-mounted` only for views that truly need a live DOM
+   * while backgrounded.
+   */
+  lifecycle?: ViewLifecycle
   /** The actual page component. Ignores `visible` unless it needs catch-up behaviour. */
   Component: ComponentType<ViewProps<K>>
 }
@@ -65,11 +81,33 @@ const portfolioModule: ViewModule<'portfolio'> = {
   Component: () => <PortfolioPage />,
 }
 
+const issueModule: ViewModule<'issue'> = {
+  kind: 'issue',
+  title: () => 'Issues',
+  toUrl: () => '/issues',
+  Component: () => <IssuePage />,
+}
+
+const issueDetailModule: ViewModule<'issue-detail'> = {
+  kind: 'issue-detail',
+  title: (spec) => spec.params.id,
+  toUrl: (spec) =>
+    `/issues/${encodeURIComponent(spec.params.wsId)}/${encodeURIComponent(spec.params.id)}`,
+  Component: ({ spec }) => <IssueDetailPage spec={spec} />,
+}
+
+const trackedIssueDetailModule: ViewModule<'tracked-issue-detail'> = {
+  kind: 'tracked-issue-detail',
+  title: (spec) => spec.params.id,
+  toUrl: (spec) =>
+    `/tracked/issues/${encodeURIComponent(spec.params.wsId)}/${encodeURIComponent(spec.params.id)}`,
+  Component: ({ spec }) => <TrackedIssueDetailPage spec={spec} />,
+}
+
 const automationSectionTitle: Record<
   Extract<ViewSpec, { kind: 'automation' }>['params']['section'],
   string
 > = {
-  schedules: 'Schedules',
   runs: 'Runs',
   api: 'API',
   flow: 'Flow',
@@ -218,7 +256,10 @@ const workspaceModule: ViewModule<'workspace'> = {
     return `${tag} · ${name}`
   },
   toUrl: (spec) => {
-    const base = `/workspaces/${encodeURIComponent(spec.params.wsId)}`
+    const base =
+      spec.params.source === 'chat'
+        ? `/chat/workspaces/${encodeURIComponent(spec.params.wsId)}`
+        : `/workspaces/${encodeURIComponent(spec.params.wsId)}`
     const sid = spec.params.sessionId
     return sid ? `${base}/s/${encodeURIComponent(sid)}` : base
   },
@@ -250,8 +291,11 @@ const fileViewerModule: ViewModule<'file-viewer'> = {
 
 // ==================== Aggregate ====================
 
-export const VIEWS = {
+const VIEWS = {
   portfolio: portfolioModule,
+  issue: issueModule,
+  'issue-detail': issueDetailModule,
+  'tracked-issue-detail': trackedIssueDetailModule,
   automation: automationModule,
   news: newsModule,
   'market-list': marketListModule,

@@ -1,5 +1,8 @@
 import { api } from '../api'
 import { createLiveStore } from './createLiveStore'
+import { reloadOnHotUpdate } from '../lib/hmr'
+
+reloadOnHotUpdate('live/trading-push')
 
 /**
  * Live count of staged-but-unpushed trading operations, for the

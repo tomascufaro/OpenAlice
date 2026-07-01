@@ -102,7 +102,7 @@ const apiKeysSchema = z.object({
 
 export const credentialVendorEnum = z.enum([
   'anthropic', 'openai', 'google',
-  'minimax', 'glm', 'kimi', 'deepseek', 'custom',
+  'minimax', 'glm', 'kimi', 'deepseek', 'longcat', 'custom',
 ])
 export type CredentialVendor = z.infer<typeof credentialVendorEnum>
 
@@ -122,6 +122,8 @@ export type CredentialWireShape = z.infer<typeof credentialWireShapeEnum>
 
 export const credentialSchema = z.object({
   vendor: credentialVendorEnum,
+  /** Human-readable label shown in pickers. Slug stays the stable reference id. */
+  label: z.string().trim().max(80).transform((s) => s || undefined).optional(),
   authType: credentialAuthTypeEnum,
   /** Present for api-key credentials; absent for subscription credentials. */
   apiKey: z.string().optional(),
@@ -161,6 +163,22 @@ export function credentialWires(cred: Credential): Partial<Record<CredentialWire
   return {}
 }
 
+/**
+ * A user-level default that seeds a freshly-created workspace's per-agent AI
+ * config from a vault credential — the "inject my usual key on every launch"
+ * setting. Keyed by agentId (`claude` / `codex` / `opencode` / `pi`).
+ * `credentialSlug` points into `credentials`; `model` is the optional run model
+ * (absent ⇒ resolved from the cred's `lastModel`, then the vendor flagship).
+ * Structurally a superset-compatible mirror of the workspaces layer's
+ * `AgentCredentialDecl`, so the creator can merge the two and feed
+ * `injectWorkspaceCredentials` directly.
+ */
+export const workspaceCredentialDefaultSchema = z.object({
+  credentialSlug: z.string(),
+  model: z.string().optional(),
+})
+export type WorkspaceCredentialDefault = z.infer<typeof workspaceCredentialDefaultSchema>
+
 export const aiProviderSchema = z.object({
   apiKeys: apiKeysSchema.default({}),
   /**
@@ -171,13 +189,33 @@ export const aiProviderSchema = z.object({
    * existing files keep them on disk until rewritten, where they're ignored.)
    */
   credentials: z.record(z.string(), credentialSchema).default({}),
+  /**
+   * Per-agent default credential seeded into EVERY new workspace at create time
+   * (agentId → {credentialSlug, model?}). The user-level counterpart to a
+   * template's `agentCredentials`: set a default cred per agent once and skip the
+   * per-workspace AI-config modal on each launch. References slugs in
+   * `credentials`; a dangling slug is loud-skipped at injection, never fatal.
+   */
+  workspaceCredentialDefaults: z.record(z.string(), workspaceCredentialDefaultSchema).default({}),
+  /**
+   * User-level default runtime for new interactive workspace sessions. This is
+   * intentionally separate from workspace identity (`agents[]`) and from
+   * credential defaults: it answers "which agent TUI should a plain New Session
+   * start?" Shell is a utility adapter, not a valid stored default.
+   */
+  workspaceDefaultAgent: z.string().nullable().default(null),
 })
 
 export type AIProviderConfig = z.infer<typeof aiProviderSchema>
 
 const agentSchema = z.object({
   maxSteps: z.number().int().positive().default(20),
-  evolutionMode: z.boolean().default(false),
+  /** Master switch for AI-initiated trade execution. When false (default),
+   *  `tradingPush` only stages + asks the user to approve in the Web UI; when
+   *  true, the AI may push committed operations straight to the broker. Gated
+   *  in the UI behind a danger warning + double-confirm. Per-account `readOnly`
+   *  still wins (read-only accounts can't stage in the first place). */
+  allowAiTrading: z.boolean().default(false),
   claudeCode: z.object({
     allowedTools: z.array(z.string()).optional(),
     disallowedTools: z.array(z.string()).default([
@@ -253,6 +291,13 @@ const marketDataSchema = z.object({
     currency: 'yfinance',
     commodity: 'yfinance',
   }),
+  /** Opt-in incremental vendors federated into equity search alongside the
+   *  default provider — regional/specialised sources a user manually enables
+   *  (e.g. 'eastmoney' for CN A-share Chinese-name search + 前复权 K-line).
+   *  yfinance stays the always-on global default; these are purely additive,
+   *  surfaced as extra searchBars candidates in their own namespace, never a
+   *  replacement. Each name must be a registered OpenTypeBB provider. */
+  extraVendors: z.array(z.string()).default([]),
   providerKeys: z.object({
     fred: z.string().optional(),
     fmp: z.string().optional(),
@@ -775,6 +820,29 @@ export async function readMarketDataConfig() {
   }
 }
 
+/**
+ * Toggle market-data `extraVendors` on/off, persisted to disk. Returns the new list.
+ *
+ * Deliberately reads the RAW file — NOT the global-merged view
+ * `readMarketDataConfig` returns — so global provider keys are never fossilized
+ * into the local section (which would defeat the global-wins-on-update intent;
+ * see [[project_global_data_root_sealed_creds]]). Writes directly, bypassing
+ * `writeConfigSection`'s providerKeys→global mirror, which is irrelevant to a
+ * vendor-list edit. Because the opentypebb resolver re-reads market-data.json
+ * per request, the change takes effect on the next search with no restart.
+ */
+export async function updateExtraVendors(
+  mutate: (current: string[]) => string[],
+): Promise<string[]> {
+  const raw = (await loadJsonFile('market-data.json')) ?? {}
+  const parsed = marketDataSchema.parse(raw)
+  const next = [...new Set(mutate(parsed.extraVendors))]
+  const updated = marketDataSchema.parse({ ...parsed, extraVendors: next })
+  await mkdir(CONFIG_DIR, { recursive: true })
+  await writeFile(resolve(CONFIG_DIR, 'market-data.json'), JSON.stringify(updated, null, 2) + '\n')
+  return next
+}
+
 /** Read tools config from disk (called per-request for hot-reload). */
 export async function readToolsConfig() {
   try {
@@ -852,7 +920,10 @@ export async function addCredential(credential: Credential): Promise<string> {
   )
   if (match) {
     // Upgrade the existing record's wires/endpoint in place (don't duplicate).
-    config.credentials[match[0]] = validated
+    config.credentials[match[0]] = {
+      ...validated,
+      ...(validated.label ?? match[1].label ? { label: validated.label ?? match[1].label } : {}),
+    }
     await mkdir(CONFIG_DIR, { recursive: true })
     await writeFile(resolve(CONFIG_DIR, 'ai-provider-manager.json'), JSON.stringify(config, null, 2) + '\n')
     return match[0]
@@ -886,6 +957,51 @@ export async function setCredentialLastModel(slug: string, model: string): Promi
 export async function deleteCredential(slug: string): Promise<void> {
   const config = await readAIProviderConfig()
   delete config.credentials[slug]
+  // Drop any workspace-default that pointed at the now-gone slug, so the
+  // Settings dropdown never shows a dangling default (injection would skip it
+  // anyway, but a stale default reads as "still configured").
+  for (const [agentId, def] of Object.entries(config.workspaceCredentialDefaults)) {
+    if (def.credentialSlug === slug) delete config.workspaceCredentialDefaults[agentId]
+  }
+  await mkdir(CONFIG_DIR, { recursive: true })
+  await writeFile(resolve(CONFIG_DIR, 'ai-provider-manager.json'), JSON.stringify(config, null, 2) + '\n')
+}
+
+/**
+ * Read the per-agent default credentials seeded into new workspaces
+ * (agentId → {credentialSlug, model?}). Empty map when unset.
+ */
+export async function readWorkspaceCredentialDefaults(): Promise<Record<string, WorkspaceCredentialDefault>> {
+  const config = await readAIProviderConfig()
+  return { ...config.workspaceCredentialDefaults }
+}
+
+/**
+ * Replace the per-agent workspace-default credential map. Entries with an empty
+ * `credentialSlug` are dropped (the UI's "don't seed this agent" choice).
+ */
+export async function writeWorkspaceCredentialDefaults(
+  defaults: Record<string, WorkspaceCredentialDefault>,
+): Promise<void> {
+  const config = await readAIProviderConfig()
+  const cleaned: Record<string, WorkspaceCredentialDefault> = {}
+  for (const [agentId, def] of Object.entries(defaults)) {
+    const parsed = workspaceCredentialDefaultSchema.parse(def)
+    if (parsed.credentialSlug) cleaned[agentId] = parsed
+  }
+  config.workspaceCredentialDefaults = cleaned
+  await mkdir(CONFIG_DIR, { recursive: true })
+  await writeFile(resolve(CONFIG_DIR, 'ai-provider-manager.json'), JSON.stringify(config, null, 2) + '\n')
+}
+
+export async function readWorkspaceDefaultAgent(): Promise<string | null> {
+  const config = await readAIProviderConfig()
+  return config.workspaceDefaultAgent ?? null
+}
+
+export async function writeWorkspaceDefaultAgent(agentId: string | null): Promise<void> {
+  const config = await readAIProviderConfig()
+  config.workspaceDefaultAgent = agentId && agentId.trim() ? agentId.trim() : null
   await mkdir(CONFIG_DIR, { recursive: true })
   await writeFile(resolve(CONFIG_DIR, 'ai-provider-manager.json'), JSON.stringify(config, null, 2) + '\n')
 }

@@ -9,6 +9,9 @@ import {
   specEquals,
   getFocusedGroup,
 } from './types'
+import { reloadOnHotUpdate } from '../lib/hmr'
+
+reloadOnHotUpdate('tabs/store')
 
 /**
  * Zustand store backing the workspace.

@@ -25,6 +25,7 @@ const demoSession: SessionRecord = {
 export const demoWorkspace: Workspace = {
   id: DEMO_WORKSPACE_ID,
   tag: 'aapl-q1',
+  displayName: 'AAPL Q1 review',
   dir: '/demo/workspaces/aapl-q1',
   createdAt: new Date().toISOString(),
   template: 'chat',
@@ -104,6 +105,7 @@ const demoChatSessions: SessionRecord[] = [
 export const demoChatWorkspace: Workspace = {
   id: DEMO_CHAT_WORKSPACE_ID,
   tag: 'chat-may26',
+  displayName: 'Semis and supply chain',
   dir: '/demo/workspaces/chat-may26',
   createdAt: new Date().toISOString(),
   template: 'chat',
