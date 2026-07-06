@@ -194,7 +194,7 @@ describe('POST /:id/headless', () => {
 });
 
 describe('POST /:id/sessions/:sid/resume — concurrent coalescing (ANG-120)', () => {
-  const TOKEN = '00000000-0000-0000-0000-000000000001';
+  const TOKEN = 'claude-calm-amber-river';
 
   function buildResume() {
     const session = {

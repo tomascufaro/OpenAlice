@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -11,6 +11,7 @@ import type { AdapterRegistry } from './cli-adapter.js';
 import { injectWorkspaceContext } from './context-injector.js';
 import { injectWorkspaceCredentials } from './credential-injection.js';
 import type { Logger } from './logger.js';
+import { generatePetnameId } from './petname-id.js';
 import type { AgentCredentialDecl, TemplateRegistry } from './template-registry.js';
 import type { WorkspaceMeta, WorkspaceRegistry } from './workspace-registry.js';
 
@@ -137,7 +138,12 @@ export class WorkspaceCreator {
       }
     }
 
-    const id = randomUUID();
+    const id = generatePetnameId(templateName, {
+      fallbackPrefix: 'workspace',
+      isTaken: (candidate) =>
+        this.opts.registry.hasId(candidate) ||
+        existsSync(join(this.opts.workspacesRoot, candidate)),
+    });
     const dir = join(this.opts.workspacesRoot, id);
     const log = this.opts.logger.child({ tag, id, dir, template: templateName, agents });
 

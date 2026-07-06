@@ -73,6 +73,7 @@ export interface SidebarProps {
 
 export function Sidebar(props: SidebarProps): ReactElement {
   const [showCreate, setShowCreate] = useState(false);
+  const showListError = Boolean(props.listError && props.workspaces.length === 0);
 
   // Headless runs, polled once for the whole tree (not per-workspace) and
   // grouped client-side. Low-frequency passive surface → plain polling.
@@ -159,7 +160,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
         />
       )}
 
-      {!props.hasLoaded && !props.listError && (
+      {!props.hasLoaded && !showListError && (
         <div className="flex flex-col mt-0.5" aria-hidden="true">
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="flex items-center gap-2 px-3 py-2">
@@ -169,10 +170,10 @@ export function Sidebar(props: SidebarProps): ReactElement {
           ))}
         </div>
       )}
-      {props.hasLoaded && props.workspaces.length === 0 && !props.listError && (
+      {props.hasLoaded && props.workspaces.length === 0 && !showListError && (
         <div className="px-3 py-2 text-[12px] text-text-muted/60">No workspaces yet</div>
       )}
-      {props.listError && <div className="px-3 py-2 text-[12px] text-red">{props.listError}</div>}
+      {showListError && <div className="px-3 py-2 text-[12px] text-red">{props.listError}</div>}
 
       <div className="flex flex-col mt-0.5">
         {props.workspaces.map((w) => (

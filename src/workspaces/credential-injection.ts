@@ -34,6 +34,12 @@ export const AGENT_WIRE_PREFERENCE: Record<string, CredentialWireShape[]> = {
   pi: ['openai-chat', 'anthropic', 'openai-responses'],
 }
 
+// Modern coding models are commonly sold as long-context runtimes. Pi defaults
+// unknown custom models to 128k and opencode defaults unknown limits to 0, so
+// new OpenAlice injections state the assumption explicitly while keeping the
+// field overridable from the workspace config UI.
+export const DEFAULT_CONTEXT_WINDOW = 1_000_000
+
 /**
  * The subset of a credential vault an agent can actually be driven by: those
  * with at least one wire shape the agent speaks (see `pickAgentWire`). Used by
@@ -93,6 +99,8 @@ export function pickAgentWire(
 export interface CredentialInjectionOverrides {
   /** Model id to run. Required in practice (a credential has none). */
   model?: string
+  /** Context window to write for custom-model runtimes; defaults to 1M for opencode/Pi. */
+  contextWindow?: number | null
   /** Claude only — which header carries the key. Defaults via baseUrl heuristic. */
   authMode?: 'x-api-key' | 'bearer'
   /** Codex only — Responses vs Chat Completions. Adapter defaults to 'chat'. */
@@ -121,6 +129,10 @@ export function credentialToWorkspaceAiCred(
     // The chosen wire shape drives how the consuming adapter is configured
     // (which @ai-sdk package / api field / wire_api).
     wireShape: picked.shape,
+  }
+
+  if (agentId === 'opencode' || agentId === 'pi') {
+    cred.contextWindow = overrides.contextWindow ?? DEFAULT_CONTEXT_WINDOW
   }
 
   if (agentId === 'claude') {

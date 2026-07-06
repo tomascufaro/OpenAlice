@@ -38,23 +38,33 @@ const TAB_FALLBACK_VENDOR: Record<Tab, string | null> = {
   pi: null,
 }
 
+type Tab = 'claude' | 'codex' | 'opencode' | 'pi'
+type Section = 'general' | 'ai'
+
 interface Props {
   wsId: string
   onClose: () => void
+  initialAgent?: Tab
+  initialSection?: Section
 }
 
 const inputClass =
   'w-full bg-bg-secondary border border-border rounded-md px-3 py-2 text-[13px] text-text placeholder:text-text-muted/60 focus:outline-none focus:border-accent'
 
-type Tab = 'claude' | 'codex' | 'opencode' | 'pi'
-type Section = 'general' | 'ai'
-
 const TAB_LABEL: Record<Tab, string> = { claude: 'Claude Code', codex: 'Codex', opencode: 'opencode', pi: 'Pi' }
+const DEFAULT_CONTEXT_WINDOW = 1_000_000
+const CONTEXT_WINDOW_OPTIONS = [
+  { value: 128_000, label: '128K' },
+  { value: 256_000, label: '256K' },
+  { value: 512_000, label: '512K' },
+  { value: 1_000_000, label: '1M' },
+] as const
 
 interface FormState {
   baseUrl: string
   apiKey: string
   model: string
+  contextWindow: number
   /** The wire protocol — drives the test + how the adapter is configured. */
   wireShape: WireShape
   wireApi: 'chat' | 'responses'
@@ -73,7 +83,20 @@ const DEFAULT_WIRE_BY_TAB: Record<Tab, WireShape> = {
   pi: 'openai-chat',
 }
 
-const EMPTY_FORM: FormState = { baseUrl: '', apiKey: '', model: '', wireShape: 'anthropic', wireApi: 'responses', authMode: 'x-api-key' }
+const EMPTY_FORM: FormState = {
+  baseUrl: '',
+  apiKey: '',
+  model: '',
+  contextWindow: DEFAULT_CONTEXT_WINDOW,
+  wireShape: 'anthropic',
+  wireApi: 'responses',
+  authMode: 'x-api-key',
+}
+
+function normalizeContextWindow(value: number | null | undefined): number {
+  if (typeof value !== 'number') return DEFAULT_CONTEXT_WINDOW
+  return CONTEXT_WINDOW_OPTIONS.some((o) => o.value === value) ? value : DEFAULT_CONTEXT_WINDOW
+}
 
 function configToForm(cfg: AgentConfig | null, tab: Tab): FormState {
   if (!cfg) return { ...EMPTY_FORM, wireShape: DEFAULT_WIRE_BY_TAB[tab] }
@@ -81,6 +104,7 @@ function configToForm(cfg: AgentConfig | null, tab: Tab): FormState {
     baseUrl: cfg.baseUrl ?? '',
     apiKey: cfg.apiKey ?? '',
     model: cfg.model ?? '',
+    contextWindow: normalizeContextWindow(cfg.contextWindow),
     wireShape: cfg.wireShape ?? DEFAULT_WIRE_BY_TAB[tab],
     wireApi: 'responses',
     authMode: cfg.authMode === 'bearer' ? 'bearer' : 'x-api-key',
@@ -93,6 +117,9 @@ function formToConfig(form: FormState, agent: AgentId): AgentConfig {
     apiKey: form.apiKey.trim() || null,
     model: form.model.trim() || null,
     wireShape: form.wireShape,
+  }
+  if (agent === 'opencode' || agent === 'pi') {
+    return { ...cfg, contextWindow: form.contextWindow }
   }
   if (agent === 'codex') {
     return { ...cfg, wireApi: form.wireApi }
@@ -120,12 +147,12 @@ function testKey(form: FormState, agent: AgentId): string {
   ].join('|')
 }
 
-export function WorkspaceAIConfigModal({ wsId, onClose }: Props) {
+export function WorkspaceAIConfigModal({ wsId, onClose, initialAgent = 'claude', initialSection = 'general' }: Props) {
   const { workspaces, saveWorkspaceMetadata } = useWorkspaces()
   const workspace = workspaces.find((w) => w.id === wsId) ?? null
   const workspaceLabel = workspace?.displayName?.trim() || workspace?.tag || wsId
-  const [section, setSection] = useState<Section>('general')
-  const [tab, setTab] = useState<Tab>('claude')
+  const [section, setSection] = useState<Section>(initialSection)
+  const [tab, setTab] = useState<Tab>(initialAgent)
   const [metadataFormWsId, setMetadataFormWsId] = useState<string | null>(null)
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
@@ -153,6 +180,11 @@ export function WorkspaceAIConfigModal({ wsId, onClose }: Props) {
   const opencodeGate = useTestGate()
   const piGate = useTestGate()
   const [presets, setPresets] = useState<Preset[]>([])
+
+  useEffect(() => {
+    setSection(initialSection)
+    setTab(initialAgent)
+  }, [initialAgent, initialSection, wsId])
 
   useEffect(() => {
     if (metadataFormWsId === wsId) return
@@ -205,6 +237,7 @@ export function WorkspaceAIConfigModal({ wsId, onClose }: Props) {
       savedForm.apiKey !== form.apiKey ||
       savedForm.model !== form.model ||
       savedForm.wireShape !== form.wireShape ||
+      ((tab === 'opencode' || tab === 'pi') && savedForm.contextWindow !== form.contextWindow) ||
       (tab === 'claude' && savedForm.authMode !== form.authMode)
     )
   }, [bundle, form, tab])
@@ -642,6 +675,21 @@ export function WorkspaceAIConfigModal({ wsId, onClose }: Props) {
               <p className="text-[11px] text-text-muted/70 mt-1">Suggestions from the matched provider — or type any model id.</p>
             )}
           </div>
+
+          {(tab === 'opencode' || tab === 'pi') && (
+            <div>
+              <label className="block text-xs font-medium text-text-muted mb-1">Context window</label>
+              <select
+                value={form.contextWindow}
+                onChange={(e) => setForm({ ...form, contextWindow: Number(e.target.value) })}
+                className={inputClass}
+              >
+                {CONTEXT_WINDOW_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {tab === 'codex' && (
             <div className="rounded-md border border-border bg-bg-secondary/50 px-3 py-2.5 space-y-2">

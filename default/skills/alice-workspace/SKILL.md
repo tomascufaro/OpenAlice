@@ -80,16 +80,20 @@ It's *what's on the plate* when you've lost the thread — scan it when you star
 **Reads are global, writes are local:**
 
 ```bash
-alice-workspace issue list                  # scan EVERY workspace's issue titles
+alice-workspace issue list                  # startup-safe summary: local + active urgent/high/medium rows
+alice-workspace issue list --mode detailed  # full global board, including low-priority scheduled noise
 alice-workspace issue show --id <name>      # one issue in full — body + run history + inbox reports (resolves the name across the board)
 alice-workspace issue create --title "…"    # a new issue on THIS workspace's board
 alice-workspace issue update --id <id> --status in_progress
 alice-workspace issue comment --id <id> --text "progress note / finding"
 ```
 
-Work it like a human board: `list` to scan titles, decide which matter, then
-`show <name>` to read those in full. `list` / `show` span the whole board (all
-workspaces); `create` / `update` / `comment` write **this** workspace's own
-`.alice/issues/` files (changing a peer's board is the human-approved peer-edit
-path). The full on-disk file model + self-scheduling (an issue with a `when`
-fires a headless run) lives in the **`self-scheduling`** skill.
+Work it like a human board: start with plain `list`, decide which focus rows
+matter, then `show --id <name>` to read those in full. Plain `list` is deliberately
+curated for startup so old low-priority scheduled items do not distract you; use
+`--mode detailed` only when you are auditing the full board. `list` / `show` span
+the whole board (all workspaces); `create` / `update` / `comment` write **this**
+workspace's own `.alice/issues/` files (changing a peer's board is the
+human-approved peer-edit path). The full on-disk file model + self-scheduling
+(an issue with a `when` fires a headless run) lives in the **`self-scheduling`**
+skill.

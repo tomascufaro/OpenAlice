@@ -20,9 +20,11 @@ import {
 import { useWorkspaces } from '../contexts/workspaces-context'
 import { installHintFor } from '../components/workspace/agentInstall'
 import {
+  getAgentReadiness,
   listAgentCredentials,
   detectWorkspaceCredential,
   QuickChatError,
+  type AgentCredentialReadiness,
   type SavedCredential,
 } from '../components/workspace/api'
 import { useWorkspace } from '../tabs/store'
@@ -127,6 +129,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
   const [pickedCred, setPickedCred] = useState<string | null>(null)
   // The cred today's chat workspace is already configured with, if it exists.
   const [detectedCred, setDetectedCred] = useState<string | null>(null)
+  const [agentReadiness, setAgentReadiness] = useState<AgentCredentialReadiness | null>(null)
   const [credMenuOpen, setCredMenuOpen] = useState(false)
   const credBoxRef = useRef<HTMLDivElement>(null)
 
@@ -135,6 +138,7 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
     () => workspaces.find((w) => w.template === 'chat' && w.tag === todayChatTag()) ?? null,
     [workspaces],
   )
+  const credentialWorkspace = targetWs ?? todaysChat
 
   // Preload the loginless credential set ONCE on mount — NOT gated on the
   // selected agent. Previously this fired only after the agents list resolved
@@ -152,27 +156,36 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
     return () => { live = false }
   }, [])
 
-  // Detect today's workspace's current cred for this runtime (for the default
+  // Detect the target workspace's current cred/readiness for this runtime (for the default
   // selection + the overwrite notice). Only when the workspace already exists.
   useEffect(() => {
-    if (!needsCred || effectiveAgent === null || todaysChat === null) {
+    if (!needsCred || effectiveAgent === null || credentialWorkspace === null || credentialWorkspace === undefined) {
       setDetectedCred(null)
+      setAgentReadiness(null)
       return
     }
     let live = true
-    detectWorkspaceCredential(todaysChat.id, effectiveAgent)
+    detectWorkspaceCredential(credentialWorkspace.id, effectiveAgent)
       .then((r) => { if (live) setDetectedCred(r.slug) })
       .catch(() => { if (live) setDetectedCred(null) })
+    getAgentReadiness(credentialWorkspace.id)
+      .then((bundle) => { if (live) setAgentReadiness(bundle.agents[effectiveAgent] ?? null) })
+      .catch(() => { if (live) setAgentReadiness(null) })
     return () => { live = false }
-  }, [needsCred, effectiveAgent, todaysChat])
+  }, [needsCred, effectiveAgent, credentialWorkspace])
 
-  const noCreds = needsCred && creds !== null && creds.length === 0
+  const workspaceCredReady =
+    needsCred &&
+    agentReadiness?.ready === true &&
+    agentReadiness.requiresCredential === true &&
+    agentReadiness.source === 'workspace-config'
+  const noCreds = needsCred && !workspaceCredReady && creds !== null && creds.length === 0
   // Effective cred = explicit pick, else what the workspace already uses, else
   // the first compatible one. Mirrors the backend's resolution order.
   const effectiveCred =
     pickedCred ??
-    (detectedCred && creds?.some((c) => c.slug === detectedCred) ? detectedCred : null) ??
-    creds?.[0]?.slug ??
+    (!workspaceCredReady && detectedCred && creds?.some((c) => c.slug === detectedCred) ? detectedCred : null) ??
+    (!workspaceCredReady ? creds?.[0]?.slug : null) ??
     null
   const credInfo = creds?.find((c) => c.slug === effectiveCred) ?? null
   // Warn when sending will overwrite the workspace's existing cred with a
@@ -461,18 +474,13 @@ export function ChatLandingPage({ spec }: { spec: { params: { targetWsId?: strin
 
         {error !== null && <div className="text-[12px] text-red px-1">{error}</div>}
 
-        {/* Runtime install guidance — the conversion nudge. Shows when no agent
-            CLI is installed at all, or the selected one is missing from PATH.
-            Detection is a hint, not a gate, so send stays enabled (PATH probing
-            can be wrong); this just tells the user what to install. Gated on
-            `agentsKnown` so it never flashes during the initial /agents load. */}
+        {/* Runtime guidance. A normal packaged build should expose managed Pi;
+            no-runtime is now an abnormal setup/debug state, not a prompt to
+            make a fresh user install a CLI. */}
         {agentsKnown && !anyInstalled ? (
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-[12px] space-y-1.5">
             <div className="font-medium text-text">{t('chatLanding.noAgentsTitle')}</div>
             <p className="text-text-muted">{t('chatLanding.noAgentsBody')}</p>
-            <code className="block font-mono text-[11px] text-text bg-bg-tertiary rounded px-2 py-1 select-all">
-              {installHintFor('claude')!.cmd}
-            </code>
           </div>
         ) : selectedMissing && selectedInfo ? (
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-[12px] space-y-1.5">

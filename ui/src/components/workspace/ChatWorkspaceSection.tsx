@@ -55,6 +55,7 @@ export function ChatWorkspaceSection(): ReactElement | null {
     () => ctx.workspaces.filter((w) => w.template === CHAT_TEMPLATE),
     [ctx.workspaces],
   )
+  const showListError = Boolean(ctx.listError && ctx.workspaces.length === 0)
 
   const isWsFocus = focused?.kind === 'workspace' && focused.params.source === 'chat'
   const selection = isWsFocus
@@ -166,7 +167,7 @@ export function ChatWorkspaceSection(): ReactElement | null {
             because there are no chats — show a skeleton instead of flashing the
             "no chats yet" empty text (or a blank pane) until the first list
             lands. */}
-        {!ctx.hasLoaded && !ctx.listError && (
+        {!ctx.hasLoaded && !showListError && (
           <li aria-hidden="true">
             {Array.from({ length: 3 }).map((_, g) => (
               <div key={g} className="mb-1.5">
@@ -181,10 +182,10 @@ export function ChatWorkspaceSection(): ReactElement | null {
             ))}
           </li>
         )}
-        {ctx.hasLoaded && chatWorkspaces.length === 0 && !ctx.listError && (
+        {ctx.hasLoaded && chatWorkspaces.length === 0 && !showListError && (
           <li className="px-3 py-2 text-[12px] text-text-muted/60">{t('chat.noChatWorkspacesYet')}</li>
         )}
-        {ctx.listError && <li className="px-3 py-1 text-[11px] text-red">{ctx.listError}</li>}
+        {showListError && <li className="px-3 py-1 text-[11px] text-red">{ctx.listError}</li>}
         {chatWorkspaces.map((w) => (
           <ChatWorkspaceRow
             key={w.id}

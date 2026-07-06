@@ -7,7 +7,6 @@
  */
 
 import { Hono } from 'hono';
-import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
 
@@ -29,31 +28,21 @@ import type { SessionRecord } from '../../workspaces/session-registry.js';
 import type { WorkspaceMeta } from '../../workspaces/workspace-registry.js';
 import { HeadlessCapacityError, resumeFromRecord, type SessionFactoryContext, type WorkspaceService } from '../../workspaces/service.js';
 import { isAgentRuntime, type WorkspaceAiCred } from '../../workspaces/cli-adapter.js';
+import { generatePetnameId } from '../../workspaces/petname-id.js';
 import { addCredential, readCredentials, readWorkspaceDefaultAgent, setCredentialLastModel, credentialWires, credentialWireShapeEnum, type Credential } from '../../core/config.js';
 import { inferCredentialVendor, resolveAnthropicAuthMode } from '../../core/credential-inference.js';
+import { compatibleCredentials, matchCredentialByApiKey } from '../../workspaces/credential-injection.js';
 import {
-  compatibleCredentials,
-  matchCredentialByApiKey,
-  resolveInjectionModel,
-  credentialToWorkspaceAiCred,
-} from '../../workspaces/credential-injection.js';
-
-/**
- * Agent runtimes that have NO login of their own (provider-agnostic) — they
- * cannot start without an injected AI config. claude/codex run on their own CLI
- * login, so quick-chat leaves them alone; opencode/pi must be seeded with a
- * vault credential or they ENOENT-die at spawn. Keep in sync with the dropdown's
- * visibility on the quick-chat composer.
- */
-const LOGINLESS_AGENTS = new Set(['opencode', 'pi']);
-
-const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  AgentCredentialError,
+  ensureAgentCredentialReady,
+  getAgentCredentialReadiness,
+} from '../../workspaces/agent-credential-readiness.js';
+import { isTerminalThemeVariant, type TerminalThemeVariant } from '../../workspaces/terminal-theme.js';
 
 // The spawn body's `resume` value is an AGENT-side session id, whose shape is
-// adapter-native: uuid for claude/codex/pi, `ses_<base62>` for opencode. The
-// launcher-side record ids in URL params stay strict-uuid (SESSION_ID_RE) —
-// this looser shape applies ONLY to the resume intent passed through to the
-// adapter's own resume flag.
+// adapter-native: uuid for claude/codex/pi, `ses_<base62>` for opencode. This
+// looser shape applies ONLY to the resume intent passed through to the adapter's
+// own resume flag; launcher-side record ids use `validId`.
 const AGENT_SESSION_ID_RE = /^[A-Za-z0-9_.-]{8,128}$/;
 
 /** Upper bound on a quick-chat seed prompt — matches the headless-dispatch cap. */
@@ -107,6 +96,12 @@ function parseSeedPrompt(
   return { prompt: trimmed };
 }
 
+function parseTerminalThemeField(raw: unknown): TerminalThemeVariant | { error: string; message: string } | undefined {
+  if (raw === undefined) return undefined;
+  if (isTerminalThemeVariant(raw)) return raw;
+  return { error: 'bad_request', message: 'terminalTheme must be "light" or "dark"' };
+}
+
 /** Max stored length of a session title (the seed message); the row truncates further. */
 const MAX_SESSION_TITLE = 200;
 
@@ -156,6 +151,8 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       readonly agentId?: string;
       readonly resume?: SessionFactoryContext['resume'];
       readonly initialPrompt?: string;
+      readonly credentialSlug?: string;
+      readonly terminalTheme?: TerminalThemeVariant;
     },
   ): Promise<SpawnSessionResult> {
     const id = meta.id;
@@ -169,6 +166,21 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     }
     const adapter = svc.resolveAdapter(meta, agentId);
     try {
+      await ensureAgentCredentialReady({
+        meta,
+        agentId: adapter.id,
+        adapter,
+        ...(opts.credentialSlug ? { pickedCredentialSlug: opts.credentialSlug } : {}),
+        logger: launcherLogger,
+      });
+    } catch (err) {
+      if (err instanceof AgentCredentialError) {
+        return { ok: false, status: 400, body: err.toBody() };
+      }
+      launcherLogger.warn('agent_cred.ensure_failed', { id, agent: adapter.id, err });
+      return { ok: false, status: 500, body: { error: 'agent_credential_failed', message: (err as Error).message } };
+    }
+    try {
       if (adapter.bootstrap) {
         await adapter.bootstrap({ wsId: id, cwd: meta.dir, launcherRepoRoot: svc.config.launcherRepoRoot });
       }
@@ -178,7 +190,12 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     }
     await svc.sessionRegistry.ensureLoaded(id);
     const prefix = adapter.namePrefix ?? adapter.id[0] ?? 's';
-    const recordId = randomUUID();
+    const recordId = generatePetnameId(adapter.id, {
+      fallbackPrefix: 'session',
+      isTaken: (candidate) =>
+        svc.sessionRegistry.findById(candidate) !== undefined ||
+        svc.pool.get(candidate) !== undefined,
+    });
     const recordName = svc.sessionRegistry.nextName(id, adapter.id, prefix);
     const nowIso = new Date().toISOString();
     const title = initialPrompt ? initialPrompt.slice(0, MAX_SESSION_TITLE) : undefined;
@@ -203,6 +220,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
         ...(resume !== undefined ? { resume } : {}),
         agentId,
         ...(initialPrompt !== undefined ? { initialPrompt } : {}),
+        ...(opts.terminalTheme !== undefined ? { terminalTheme: opts.terminalTheme } : {}),
         recordId,
         recordName,
       };
@@ -299,56 +317,6 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     if (!cfg) return null;
     const slug = matchCredentialByApiKey(credentials, cfg.apiKey);
     return slug ? { slug, model: cfg.model ?? null } : null;
-  };
-
-  // Seed a loginless agent (opencode/pi) with a vault credential before it
-  // spawns — claude/codex carry their own CLI login and never reach here. Picks
-  // the user's choice, else the cred this workspace already uses, else the first
-  // compatible one; writes the agent's native AI-config and remembers the model.
-  // Returns an HTTP-mappable error only for the dead-end case (no compatible
-  // credential at all), so the composer can bounce the user to Settings.
-  const injectLoginlessCredential = async (
-    meta: WorkspaceMeta,
-    agentId: string,
-    pickedSlug: string | undefined,
-  ): Promise<{ ok: true } | { ok: false; status: number; body: { error: string; agent: string; settingsTarget: string } }> => {
-    const adapter = svc.adapters.get(agentId);
-    if (!adapter?.writeAiConfig) return { ok: true }; // not a configurable agent — let spawn proceed
-    const credentials = await readCredentials();
-    const compatible = compatibleCredentials(credentials, agentId);
-    if (compatible.length === 0) {
-      return { ok: false, status: 400, body: { error: 'no_ai_credential', agent: agentId, settingsTarget: 'ai-provider' } };
-    }
-    const compatMap = new Map(compatible);
-    const detected = await detectWorkspaceCred(meta, agentId, credentials);
-    const chosenSlug =
-      (pickedSlug && compatMap.has(pickedSlug) ? pickedSlug : undefined) ??
-      (detected && compatMap.has(detected.slug) ? detected.slug : undefined) ??
-      compatible[0][0];
-    const cred = compatMap.get(chosenSlug);
-    if (!cred) return { ok: true };
-    const model = resolveInjectionModel(cred);
-    const wsCred = credentialToWorkspaceAiCred(cred, agentId, model ? { model } : {});
-    if (!wsCred) {
-      // compatibleCredentials guarantees a wire, so this is unreachable — but a
-      // loud skip beats injecting a mismatched shape.
-      launcherLogger.warn('quick_chat.cred_inject_incompatible', { agent: agentId, slug: chosenSlug });
-      return { ok: true };
-    }
-    try {
-      await adapter.writeAiConfig(meta.dir, wsCred);
-      if (model) await setCredentialLastModel(chosenSlug, model).catch(() => undefined);
-      launcherLogger.info('quick_chat.cred_injected', {
-        id: meta.id, agent: agentId, slug: chosenSlug,
-        ...(model ? { model } : {}),
-        ...(detected && detected.slug !== chosenSlug ? { replaced: detected.slug } : {}),
-      });
-    } catch (err) {
-      // Best-effort — a write failure shouldn't block the launch; the agent will
-      // surface its own missing-config error in the terminal.
-      launcherLogger.warn('quick_chat.cred_inject_failed', { id: meta.id, agent: agentId, slug: chosenSlug, err });
-    }
-    return { ok: true };
   };
 
   // ── templates / agents ───────────────────────────────────────────────────
@@ -621,6 +589,8 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     let resume: SessionFactoryContext['resume'];
     let agentId: string | undefined;
     let initialPrompt: string | undefined;
+    let credentialSlug: string | undefined;
+    let terminalTheme: TerminalThemeVariant | undefined;
     try {
       const body = await safeJson(c);
       const fields = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
@@ -629,6 +599,11 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       else if (typeof raw === 'string' && AGENT_SESSION_ID_RE.test(raw)) resume = { sessionId: raw };
       const rawAgent = fields['agent'];
       if (typeof rawAgent === 'string' && rawAgent.length > 0) agentId = rawAgent;
+      const rawSlug = fields['credentialSlug'];
+      if (typeof rawSlug === 'string' && rawSlug.length > 0) credentialSlug = rawSlug;
+      const theme = parseTerminalThemeField(fields['terminalTheme']);
+      if (theme && typeof theme === 'object' && 'error' in theme) return c.json(theme, 400);
+      terminalTheme = theme;
       // Quick-chat seed (fresh-only): a first message the TUI opens already
       // working on. Ignored when resuming — seeding + resume is ambiguous on
       // codex's `resume <id>` / pi's `--session-id`.
@@ -642,6 +617,8 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       ...(agentId !== undefined ? { agentId } : {}),
       ...(resume !== undefined ? { resume } : {}),
       ...(initialPrompt !== undefined ? { initialPrompt } : {}),
+      ...(credentialSlug !== undefined ? { credentialSlug } : {}),
+      ...(terminalTheme !== undefined ? { terminalTheme } : {}),
     });
     if (!result.ok) return c.json(result.body, result.status as 400 | 500);
     return c.json(result.session, 201);
@@ -658,6 +635,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     let agentId: string | undefined;
     let credentialSlug: string | undefined;
     let targetWsId: string | undefined;
+    let terminalTheme: TerminalThemeVariant | undefined;
     try {
       const body = await safeJson(c);
       const fields = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
@@ -675,6 +653,9 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       // chat sidebar's per-workspace "+" ("Ask Alice, but in this workspace").
       const rawTarget = fields['targetWsId'];
       if (typeof rawTarget === 'string' && rawTarget.length > 0) targetWsId = rawTarget;
+      const theme = parseTerminalThemeField(fields['terminalTheme']);
+      if (theme && typeof theme === 'object' && 'error' in theme) return c.json(theme, 400);
+      terminalTheme = theme;
     } catch (err) {
       return c.json({ error: 'bad_request', message: (err as Error).message }, 400);
     }
@@ -700,21 +681,10 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       meta = target.meta;
     }
 
-    // A loginless runtime (opencode/pi) can't start without an AI config — seed
-    // it from the vault before spawn. The dead-end (no compatible credential at
-    // all) returns 400 no_ai_credential so the composer bounces to Settings
-    // instead of spawning an agent that'll instantly die on a missing key.
-    const effectiveAgent = agentId ?? await resolveDefaultAgentId(meta);
-    if (!effectiveAgent) {
-      return c.json({ error: 'no_agent_runtime', message: 'workspace has no agent runtime enabled' }, 400);
-    }
-    if (LOGINLESS_AGENTS.has(effectiveAgent)) {
-      const inject = await injectLoginlessCredential(meta, effectiveAgent, credentialSlug);
-      if (!inject.ok) return c.json(inject.body, inject.status as 400);
-    }
-
     const spawn = await spawnInteractiveSession(meta, {
       ...(agentId !== undefined ? { agentId } : {}),
+      ...(credentialSlug !== undefined ? { credentialSlug } : {}),
+      ...(terminalTheme !== undefined ? { terminalTheme } : {}),
       initialPrompt: prompt,
     });
     if (!spawn.ok) return c.json(spawn.body, spawn.status as 400 | 500);
@@ -726,7 +696,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
     app.post(`/:id/sessions/:sid/${action}`, async (c) => {
       const id = c.req.param('id');
       const token = c.req.param('sid');
-      if (!validId(id) || !SESSION_ID_RE.test(token)) {
+      if (!validId(id) || !validId(token)) {
         return c.json({ error: 'not_found' }, 404);
       }
       const record = svc.sessionRegistry.get(id, token);
@@ -771,8 +741,18 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
   app.post('/:id/sessions/:sid/resume', async (c) => {
     const id = c.req.param('id');
     const token = c.req.param('sid');
-    if (!validId(id) || !SESSION_ID_RE.test(token)) {
+    if (!validId(id) || !validId(token)) {
       return c.json({ error: 'not_found' }, 404);
+    }
+    let terminalTheme: TerminalThemeVariant | undefined;
+    try {
+      const body = await safeJson(c);
+      const fields = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+      const theme = parseTerminalThemeField(fields['terminalTheme']);
+      if (theme && typeof theme === 'object' && 'error' in theme) return c.json(theme, 400);
+      terminalTheme = theme;
+    } catch (err) {
+      return c.json({ error: 'bad_request', message: (err as Error).message }, 400);
     }
     // Serialize concurrent resumes of this record (ANG-120 — see resumeInFlight).
     // A later double-fire awaits the in-flight resume, then doResume()'s in-lock
@@ -805,6 +785,20 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
           error: 'unknown_agent',
           message: `record references unknown adapter: ${record.agent}`,
         }, 500);
+      }
+      try {
+        await ensureAgentCredentialReady({
+          meta,
+          agentId: adapter.id,
+          adapter,
+          logger: launcherLogger,
+        });
+      } catch (err) {
+        if (err instanceof AgentCredentialError) {
+          return c.json(err.toBody(), 400);
+        }
+        launcherLogger.warn('agent_cred.ensure_failed_on_resume', { id, agent: adapter.id, err });
+        return c.json({ error: 'agent_credential_failed', message: (err as Error).message }, 500);
       }
       const resume = resumeFromRecord(record, adapter);
       const plan = svc.computeSpawnPlan(meta, adapter, resume);
@@ -849,6 +843,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
           agentId: record.agent,
           recordId: record.id,
           recordName: record.name,
+          ...(terminalTheme !== undefined ? { terminalTheme } : {}),
           ...(initialReplayBytes ? { initialReplayBytes } : {}),
         };
         const session = svc.pool.spawn(id, ctx);
@@ -921,7 +916,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
   app.get('/:id/sessions/:sid/diagnostics', async (c) => {
     const id = c.req.param('id');
     const token = c.req.param('sid');
-    if (!validId(id) || !SESSION_ID_RE.test(token)) {
+    if (!validId(id) || !validId(token)) {
       return c.json({ error: 'not_found' }, 404);
     }
     const meta = svc.registry.get(id);
@@ -1015,7 +1010,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
   app.post('/:id/sessions/:sid/probe', async (c) => {
     const id = c.req.param('id');
     const token = c.req.param('sid');
-    if (!validId(id) || !SESSION_ID_RE.test(token)) {
+    if (!validId(id) || !validId(token)) {
       return c.json({ error: 'not_found' }, 404);
     }
     let prompt: string;
@@ -1037,17 +1032,18 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
         ? Math.min(rawTimeout, 120_000)
         : 20_000;
       // resume override: 'auto' (default — follow record's resumeHint),
-      // 'fresh' (no resume flag), 'last' (force --continue), or a UUID
-      // string (force --resume <uuid>). Lets the probe seed a brand-new
-      // session before any real interaction has produced a transcript.
+      // 'fresh' (no resume flag), 'last' (force --continue), or an adapter-
+      // native session id string (force --resume/--session <id>). Lets the
+      // probe seed a brand-new session before any real interaction has produced
+      // a transcript.
       const rawResume = fields['resume'];
       if (rawResume !== undefined && rawResume !== 'auto') {
         if (rawResume === 'fresh') resumeOverride = 'none';
         else if (rawResume === 'last') resumeOverride = 'last';
-        else if (typeof rawResume === 'string' && SESSION_ID_RE.test(rawResume)) {
+        else if (typeof rawResume === 'string' && AGENT_SESSION_ID_RE.test(rawResume)) {
           resumeOverride = { sessionId: rawResume };
         } else {
-          return c.json({ error: 'bad_request', message: 'resume must be "auto", "fresh", "last", or a UUID' }, 400);
+          return c.json({ error: 'bad_request', message: 'resume must be "auto", "fresh", "last", or an agent session id' }, 400);
         }
       }
     } catch (err) {
@@ -1087,6 +1083,9 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       const result = await svc.runHeadlessProbe(meta, adapter, resume, prompt, timeoutMs);
       return c.json(result);
     } catch (err) {
+      if (err instanceof AgentCredentialError) {
+        return c.json(err.toBody(), 400);
+      }
       launcherLogger.error('workspace.probe_failed', { id, token, err });
       return c.json({ error: 'probe_failed', message: (err as Error).message }, 500);
     }
@@ -1172,6 +1171,9 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
         const result = await svc.runHeadlessTask(meta, adapter, prompt, timeoutMs);
         return c.json(result);
       } catch (err) {
+        if (err instanceof AgentCredentialError) {
+          return c.json(err.toBody(), 400);
+        }
         launcherLogger.error('workspace.headless_failed', { id, agent: adapter.id, err });
         return c.json({ error: 'headless_failed', message: (err as Error).message }, 500);
       }
@@ -1186,6 +1188,9 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       if (err instanceof HeadlessCapacityError) {
         return c.json({ error: 'capacity', message: err.message }, 429);
       }
+      if (err instanceof AgentCredentialError) {
+        return c.json(err.toBody(), 400);
+      }
       launcherLogger.error('workspace.headless_failed', { id, agent: adapter.id, err });
       return c.json({ error: 'headless_failed', message: (err as Error).message }, 500);
     }
@@ -1194,7 +1199,7 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
   app.delete('/:id/sessions/:sid', async (c) => {
     const id = c.req.param('id');
     const token = c.req.param('sid');
-    if (!validId(id) || !SESSION_ID_RE.test(token)) {
+    if (!validId(id) || !validId(token)) {
       return c.json({ error: 'not_found' }, 404);
     }
     const record = svc.sessionRegistry.get(id, token);
@@ -1315,6 +1320,49 @@ export function createWorkspaceRoutes(svc: WorkspaceService): Hono {
       if (err instanceof PathTraversal) return c.json({ error: 'invalid_path' }, 400);
       launcherLogger.warn('agent_config.detect_cred_failed', { id, agent, err });
       return c.json({ slug: null, model: null });
+    }
+  });
+
+  app.get('/:id/agent-readiness', async (c) => {
+    const id = c.req.param('id');
+    if (!validId(id)) return c.json({ error: 'not_found' }, 404);
+    const meta = svc.registry.get(id);
+    if (!meta) return c.json({ error: 'not_found' }, 404);
+    try {
+      const credentials = await readCredentials();
+      const rows = await Promise.all(
+        meta.agents
+          .map((agentId) => ({ agentId, adapter: svc.adapters.get(agentId) }))
+          .filter(({ adapter }) => adapter !== undefined && isAgentRuntime(adapter))
+          .map(({ agentId, adapter }) =>
+            getAgentCredentialReadiness({ meta, agentId, adapter, credentials }),
+          ),
+      );
+      return c.json({ agents: Object.fromEntries(rows.map((row) => [row.agent, row])) });
+    } catch (err) {
+      if (err instanceof PathTraversal) return c.json({ error: 'invalid_path' }, 400);
+      launcherLogger.warn('agent_readiness.failed', { id, err });
+      return c.json({ error: 'readiness_failed', message: (err as Error).message }, 500);
+    }
+  });
+
+  app.get('/:id/agent-readiness/:agent', async (c) => {
+    const id = c.req.param('id');
+    const agent = c.req.param('agent');
+    if (!validId(id)) return c.json({ error: 'not_found' }, 404);
+    const meta = svc.registry.get(id);
+    if (!meta) return c.json({ error: 'not_found' }, 404);
+    try {
+      const row = await getAgentCredentialReadiness({
+        meta,
+        agentId: agent,
+        adapter: svc.adapters.get(agent),
+      });
+      return c.json(row);
+    } catch (err) {
+      if (err instanceof PathTraversal) return c.json({ error: 'invalid_path' }, 400);
+      launcherLogger.warn('agent_readiness.failed', { id, agent, err });
+      return c.json({ error: 'readiness_failed', message: (err as Error).message }, 500);
     }
   });
 

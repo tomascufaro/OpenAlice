@@ -5,6 +5,7 @@
  */
 
 import type { WireShape } from '../../api'
+import type { TerminalThemeVariant } from './terminalTheme'
 
 export interface Workspace {
   readonly id: string;
@@ -215,6 +216,27 @@ export async function setWorkspaceDefaultAgent(agent: string | null): Promise<st
   return body.agent ?? null;
 }
 
+export async function getIssueDefaultAgent(): Promise<string | null> {
+  const res = await fetch('/api/config/issue-default-agent');
+  if (!res.ok) return null;
+  const body = (await res.json()) as { agent?: string | null };
+  return body.agent ?? null;
+}
+
+export async function setIssueDefaultAgent(agent: string | null): Promise<string | null> {
+  const res = await fetch('/api/config/issue-default-agent', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent }),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => '');
+    throw new Error(`set issue default agent failed: ${res.status} ${msg}`);
+  }
+  const body = (await res.json()) as { agent?: string | null };
+  return body.agent ?? null;
+}
+
 // ── sessions ─────────────────────────────────────────────────────────────────
 //
 // V3.S4 — single SessionRecord type that covers both running PTYs and paused
@@ -249,7 +271,7 @@ export interface SpawnedSession {
 }
 
 export interface SpawnOptions {
-  /** `'last'` → adapter-specific "continue", any UUID → adapter-specific resume-by-id. */
+  /** `'last'` → adapter-specific "continue", any string → adapter-specific resume-by-id. */
   readonly resume?: 'last' | string;
   /** Explicit runtime/tool adapter for this spawn. */
   readonly agent?: string;
@@ -259,6 +281,8 @@ export interface SpawnOptions {
    * the adapter's interactive `composeCommand`; ignored when `resume` is set.
    */
   readonly initialPrompt?: string;
+  /** Concrete renderer theme at spawn time; gives TUIs an env hint. */
+  readonly terminalTheme?: TerminalThemeVariant;
 }
 
 export async function spawnSession(
@@ -269,6 +293,7 @@ export async function spawnSession(
   if (opts.resume !== undefined) body['resume'] = opts.resume;
   if (opts.agent !== undefined) body['agent'] = opts.agent;
   if (opts.initialPrompt !== undefined) body['initialPrompt'] = opts.initialPrompt;
+  if (opts.terminalTheme !== undefined) body['terminalTheme'] = opts.terminalTheme;
   const res = await fetch(
     `/api/workspaces/${encodeURIComponent(id)}/sessions/spawn`,
     {
@@ -311,11 +336,13 @@ export async function quickChat(
   agent?: string,
   credentialSlug?: string,
   targetWsId?: string,
+  terminalTheme?: TerminalThemeVariant,
 ): Promise<QuickChatResult> {
   const body: Record<string, unknown> = { prompt };
   if (agent !== undefined) body['agent'] = agent;
   if (credentialSlug !== undefined) body['credentialSlug'] = credentialSlug;
   if (targetWsId !== undefined) body['targetWsId'] = targetWsId;
+  if (terminalTheme !== undefined) body['terminalTheme'] = terminalTheme;
   const res = await fetch('/api/workspaces/quick-chat', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -342,10 +369,24 @@ export async function pauseSession(wsId: string, sessionId: string): Promise<boo
  * semantic (claude: --resume <id> or --continue; codex: resume --last; shell:
  * fresh PTY w/ scrollback restore in S5).
  */
-export async function resumeSession(wsId: string, sessionId: string): Promise<SpawnedSession | null> {
+export async function resumeSession(
+  wsId: string,
+  sessionId: string,
+  terminalTheme?: TerminalThemeVariant,
+): Promise<SpawnedSession | null> {
+  const body: Record<string, unknown> = {};
+  if (terminalTheme !== undefined) body['terminalTheme'] = terminalTheme;
   const res = await fetch(
     `/api/workspaces/${encodeURIComponent(wsId)}/sessions/${encodeURIComponent(sessionId)}/resume`,
-    { method: 'POST' },
+    {
+      method: 'POST',
+      ...(Object.keys(body).length > 0
+        ? {
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          }
+        : {}),
+    },
   );
   if (!res.ok) return null;
   return (await res.json()) as SpawnedSession;
@@ -447,7 +488,16 @@ export interface DirListing {
   readonly entries: readonly FileEntry[];
 }
 
+function electronWorkspaceBridge(): NonNullable<Window['openAlice']>['workspace'] | undefined {
+  return typeof window !== 'undefined' ? window.openAlice?.workspace : undefined;
+}
+
 export async function listFiles(id: string, relPath: string): Promise<DirListing> {
+  // Electron app mode has a native file transport. Browser/dev/Docker keep the
+  // HTTP path, which is still the right shape for self-hosting and ordinary
+  // browser debugging.
+  const bridge = electronWorkspaceBridge();
+  if (bridge) return bridge.listFiles({ id, path: relPath });
   const qs = relPath ? `?path=${encodeURIComponent(relPath)}` : '';
   const res = await fetch(`/api/workspaces/${encodeURIComponent(id)}/files${qs}`);
   if (!res.ok) throw new Error(`list files failed: ${res.status}`);
@@ -468,6 +518,8 @@ export type ReadFileResult =
   | { kind: 'error'; message: string };
 
 export async function readWorkspaceFile(id: string, relPath: string): Promise<ReadFileResult> {
+  const bridge = electronWorkspaceBridge();
+  if (bridge) return bridge.readFile({ id, path: relPath });
   const qs = `?path=${encodeURIComponent(relPath)}`;
   let res: Response;
   try {
@@ -496,6 +548,8 @@ export interface AgentConfig {
   readonly baseUrl: string | null;
   readonly apiKey: string | null;
   readonly model: string | null;
+  /** Optional custom-model context window for opencode/Pi provider overrides. */
+  readonly contextWindow?: number | null;
   /** Wire protocol the endpoint speaks — drives how the adapter is configured. */
   readonly wireShape?: WireShape | null;
   /** Codex only — wire format for the upstream API. */
@@ -516,6 +570,32 @@ export interface AgentConfigBundle {
 }
 
 export type AgentId = 'claude' | 'codex' | 'opencode' | 'pi';
+
+export type AgentCredentialSource =
+  | 'runtime-login'
+  | 'workspace-config'
+  | 'launcher-vault'
+  | 'missing'
+  | 'unknown-agent'
+  | 'disabled-agent';
+
+export interface AgentCredentialReadiness {
+  readonly agent: string;
+  readonly ready: boolean;
+  readonly requiresCredential: boolean;
+  readonly source: AgentCredentialSource;
+  readonly hasWorkspaceConfig: boolean;
+  readonly hasUsableWorkspaceConfig: boolean;
+  readonly detectedCredentialSlug: string | null;
+  readonly compatibleCredentialSlugs: readonly string[];
+  readonly injectableCredentialSlugs: readonly string[];
+  readonly settingsTarget?: 'ai-provider';
+  readonly message?: string;
+}
+
+export interface AgentReadinessBundle {
+  readonly agents: Record<string, AgentCredentialReadiness>;
+}
 
 // ── Central credential store ──────────────────────────────────────────────
 //
@@ -588,6 +668,12 @@ export async function getAgentConfig(wsId: string): Promise<AgentConfigBundle> {
   const res = await fetch(`/api/workspaces/${encodeURIComponent(wsId)}/agent-config`);
   if (!res.ok) throw new Error(`get agent config failed: ${res.status}`);
   return (await res.json()) as AgentConfigBundle;
+}
+
+export async function getAgentReadiness(wsId: string): Promise<AgentReadinessBundle> {
+  const res = await fetch(`/api/workspaces/${encodeURIComponent(wsId)}/agent-readiness`);
+  if (!res.ok) throw new Error(`get agent readiness failed: ${res.status}`);
+  return (await res.json()) as AgentReadinessBundle;
 }
 
 export async function saveAgentConfig(

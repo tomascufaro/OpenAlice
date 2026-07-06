@@ -10,9 +10,10 @@
 
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { basename, delimiter as pathDelimiter, join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { cliBinPath } from '@/core/paths.js';
+import { readIssueDefaultAgent, readWorkspaceDefaultAgent } from '@/core/config.js';
 
 import { claudeAdapter } from './adapters/claude.js';
 import { codexAdapter } from './adapters/codex.js';
@@ -21,7 +22,9 @@ import { piAdapter } from './adapters/pi.js';
 import { shellAdapter } from './adapters/shell.js';
 import { AdapterRegistry, isAgentRuntime, type CliAdapter } from './cli-adapter.js';
 import { loadConfig, type ServerConfig } from './config.js';
+import { ensureAgentCredentialReady } from './agent-credential-readiness.js';
 import { logger as launcherLogger } from './logger.js';
+import { acquireWorkspaceProcessLock } from './process-lock.js';
 import { runHeadlessProbe, type HeadlessProbeResult } from './probe.js';
 import { runHeadlessTask, type HeadlessTaskResult } from './headless-task.js';
 import { ScheduleMarkerStore } from './schedule/marker-store.js';
@@ -45,6 +48,7 @@ import {
   type IssuesSnapshotWorkspace,
   type WikilinkIssueRef,
 } from './issues/board.js';
+import { completeOneShotIssueAfterRun } from './issues/auto-complete.js';
 import type { IInboxStore } from '@/core/inbox-store.js';
 import { HeadlessTaskRegistry, headlessLogPaths } from './headless-task-registry.js';
 
@@ -62,10 +66,11 @@ import { ScrollbackStore } from './scrollback-store.js';
 import { SessionPool, type SessionFactoryContext } from './session-pool.js';
 import { SessionRegistry, type SessionRecord } from './session-registry.js';
 import { buildCliPath, buildSpawnEnv } from './spawn-env.js';
+import { terminalThemeEnv } from './terminal-theme.js';
 import { readReadmeVersion, TemplateRegistry } from './template-registry.js';
 import { readWorkspaceMetadata } from './workspace-metadata.js';
 import { TranscriptWatcher } from './transcript-watcher.js';
-import { detectBinary, type AgentAvailability } from './agent-detect.js';
+import { detectAgentBinary, runtimeInstallOverride, type AgentAvailability } from './agent-detect.js';
 import { resolveLaunchCommand } from './win-command.js';
 import { WorkspaceCreator } from './workspace-creator.js';
 import { WorkspaceRegistry, type WorkspaceMeta } from './workspace-registry.js';
@@ -188,11 +193,14 @@ export interface WorkspaceService {
 export interface CreateWorkspaceServiceOptions {
   /** Backend's bound web port — used to derive the CORS allowlist. */
   readonly webPort: number;
-  /** Backend's bound MCP port — injected as `OPENALICE_MCP_URL` into each
-   *  PTY's env so workspace `mcp.json` templates' `${OPENALICE_MCP_URL:-...}`
-   *  fallback bridge resolves to the live backend (not whatever was the
-   *  default in template files). */
+  /** Legacy MCP/local-tool port retained for callers that still print it. */
   readonly mcpPort: number;
+  /** Base URL used by the injected `alice*` CLI shims, usually `/cli`. */
+  readonly toolBaseUrl: string;
+  /** Optional Unix socket / named pipe used by `alice*` in Electron app mode. */
+  readonly toolSocketPath?: string;
+  /** Optional MCP protocol URL. Absent when MCP is disabled. */
+  readonly mcpBaseUrl?: string;
   /** The global inbox store, so `issueDetail` can join the inbox reports an
    *  issue produced (entries stamped `origin.issueId`) in the domain layer —
    *  every surface (HTTP / CLI / MCP) gets the join, not just the route.
@@ -219,6 +227,7 @@ export function resumeFromRecord(
 export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions): Promise<WorkspaceService> {
   const config = loadConfig({ webPort: opts.webPort });
   const inboxStore = opts.inboxStore;
+  const processLock = await acquireWorkspaceProcessLock(config.launcherRoot);
 
   const registry = await WorkspaceRegistry.load(
     `${config.launcherRoot}/workspaces.json`,
@@ -308,6 +317,28 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
     return adapters.resolve(null);
   };
 
+  const firstWorkspaceRuntime = (wsMeta: WorkspaceMeta): string | undefined =>
+    wsMeta.agents.find((id) => {
+      const adapter = adapters.get(id);
+      return adapter ? isAgentRuntime(adapter) : false;
+    });
+
+  const validRuntimeForWorkspace = (wsMeta: WorkspaceMeta, agentId: string | null): string | undefined => {
+    if (!agentId || !wsMeta.agents.includes(agentId)) return undefined;
+    const adapter = adapters.get(agentId);
+    return adapter && isAgentRuntime(adapter) ? agentId : undefined;
+  };
+
+  /**
+   * Default for scheduled issues with no frontmatter `agent`: issue-specific
+   * setting first, then the interactive workspace default for backwards
+   * continuity, then the workspace's first enabled runtime.
+   */
+  const resolveIssueDefaultAgentId = async (wsMeta: WorkspaceMeta): Promise<string | undefined> =>
+    validRuntimeForWorkspace(wsMeta, await readIssueDefaultAgent().catch(() => null)) ??
+    validRuntimeForWorkspace(wsMeta, await readWorkspaceDefaultAgent().catch(() => null)) ??
+    firstWorkspaceRuntime(wsMeta);
+
   /**
    * Single source of truth for "given a workspace + adapter + resume intent,
    * what argv / cwd / env / transcriptDir would a spawn use?" Consumed by:
@@ -341,17 +372,18 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
     const baseEnv = buildSpawnEnv(process.env, {
       AQ_WS_ID: ws.id,
       AQ_LAUNCHER_REPO_ROOT: config.launcherRepoRoot,
-      // Tells workspace templates' `${OPENALICE_MCP_URL:-...}` substitution
-      // where to find the backend's MCP endpoint at spawn time. Without
-      // this, Claude Code / Codex inside the workspace would fall back to
-      // the template-default port literal which may not match the actual
-      // backend (guardian can pick a different port if the default is taken).
-      OPENALICE_MCP_URL: `http://127.0.0.1:${opts.mcpPort}/mcp`,
+      // Local tool gateway for the injected `alice*` CLI shims. Electron/dev
+      // can point this at the web listener's `/cli`; Docker/public-web can keep
+      // it on a separate loopback-only port. This is the default agent tool
+      // path and does not require MCP to be enabled.
+      OPENALICE_TOOL_URL: opts.toolBaseUrl,
+      ...(opts.toolSocketPath ? { OPENALICE_TOOL_SOCKET: opts.toolSocketPath } : {}),
+      ...(opts.mcpBaseUrl ? { OPENALICE_MCP_URL: opts.mcpBaseUrl } : {}),
       // Prepend the `alice` CLI shim dir so the workspace agent can invoke it
-      // from its shell (it reads OPENALICE_MCP_URL + AQ_WS_ID above). Shared
+      // from its shell (it reads OPENALICE_TOOL_URL + AQ_WS_ID above). Shared
       // script — not written into the workspace, so it never pollutes the
       // workspace's git repo.
-      PATH: `${cliBinPath()}${pathDelimiter}${process.env.PATH ?? ''}`,
+      OPENALICE_WORKSPACE_CLI_BIN_PATH: cliBinPath(),
       // Per-workspace git identity — so any commit the agent makes (in its own
       // repo OR a peer's, during cross-workspace collaboration) self-attributes
       // to this workspace, and never fails for a missing identity on a clean
@@ -434,6 +466,12 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
     prompt: string,
     timeoutMs: number,
   ): Promise<HeadlessProbeResult> => {
+    await ensureAgentCredentialReady({
+      meta: ws,
+      agentId: adapter.id,
+      adapter,
+      logger: launcherLogger,
+    });
     const { command, cwd, env, transcriptDir } = composeSpawnInputs(ws, adapter, resume);
     return runHeadlessProbe({
       command,
@@ -460,6 +498,12 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
     if (!adapter.capabilities.headless || !adapter.composeHeadlessCommand) {
       throw new Error(`adapter "${adapter.id}" has no headless mode`);
     }
+    await ensureAgentCredentialReady({
+      meta: ws,
+      agentId: adapter.id,
+      adapter,
+      logger: launcherLogger,
+    });
     // Reuse a fresh interactive spawn's env/cwd (identical MCP injection),
     // then swap the interactive command for the one-shot headless argv. Inject
     // AQ_RUN_ID = this run's taskId so the agent's inbox pushes self-link to the
@@ -508,6 +552,12 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
     if (!adapter.capabilities.headless || !adapter.composeHeadlessCommand) {
       throw new Error(`adapter "${adapter.id}" has no headless mode`);
     }
+    await ensureAgentCredentialReady({
+      meta: ws,
+      agentId: adapter.id,
+      adapter,
+      logger: launcherLogger,
+    });
     if (headlessTasks.runningCount() >= MAX_CONCURRENT_HEADLESS) {
       throw new HeadlessCapacityError(MAX_CONCURRENT_HEADLESS);
     }
@@ -531,16 +581,53 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
             launcherLogger.warn('headless.session_id_record_failed', { taskId: rec.taskId, err }),
           ),
     })
-      .then((r) =>
-        headlessTasks.complete(rec.taskId, {
-          status: r.killed ? 'failed' : r.exitCode === 0 ? 'done' : 'failed',
+      .then(async (r) => {
+        const status = r.killed ? 'failed' : r.exitCode === 0 ? 'done' : 'failed';
+        await headlessTasks.complete(rec.taskId, {
+          status,
           finishedAt: Date.now(),
           durationMs: r.durationMs,
           exitCode: r.exitCode,
           signal: r.signal,
           killed: r.killed,
-        }),
-      )
+        });
+        // Scheduled one-shot issues are the only board items whose lifecycle can
+        // be closed mechanically from a run exit. Repeating schedules keep their
+        // issue open; failed one-shots stay open so the operator can inspect and
+        // decide whether to rerun.
+        try {
+          const issueCompletion = await completeOneShotIssueAfterRun({
+            wsDir: ws.dir,
+            issueId,
+            status,
+            exitCode: r.exitCode,
+            killed: r.killed,
+          });
+          if (issueCompletion.updated) {
+            launcherLogger.info('issue.oneshot_completed', {
+              wsId: ws.id,
+              issueId: issueCompletion.issueId,
+              previousStatus: issueCompletion.previousStatus,
+              taskId: rec.taskId,
+            });
+          } else if (issueCompletion.reason === 'mutation_failed' || issueCompletion.reason === 'issues_unavailable') {
+            launcherLogger.warn('issue.oneshot_complete_skipped', {
+              wsId: ws.id,
+              issueId,
+              taskId: rec.taskId,
+              reason: issueCompletion.reason,
+              error: issueCompletion.error,
+            });
+          }
+        } catch (err) {
+          launcherLogger.warn('issue.oneshot_complete_failed', {
+            wsId: ws.id,
+            issueId,
+            taskId: rec.taskId,
+            err,
+          });
+        }
+      })
       .catch((err) =>
         headlessTasks.complete(rec.taskId, {
           status: 'failed',
@@ -563,7 +650,10 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
   );
   const scheduleScanner = new ScheduleScanner({
     registry,
-    resolveAdapter,
+    resolveAdapter: async (ws, agentId) => resolveAdapter(
+      ws,
+      agentId ?? await resolveIssueDefaultAgentId(ws),
+    ),
     dispatch: dispatchHeadlessTaskMethod,
     markers: scheduleMarkers,
     logger: launcherLogger.child({ scope: 'schedule' }),
@@ -635,7 +725,7 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
         }
         const issues: IssuesSnapshotIssue[] = res.issues.map((issue) => {
           // Unscheduled ⇒ pure board work item, no firing markers.
-          if (!issue.when) return snapshotBoardIssue(issue, null);
+          if (!issue.when) return snapshotBoardIssue(issue, null, ws.tag);
           // Scheduled ⇒ reuse the schedule snapshot's math so the board's
           // last/next match the Schedules dashboard exactly.
           const fired = snapshotScheduledIssue(
@@ -645,10 +735,14 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
             nowMs,
             DEFAULT_INTERVAL_MS,
           );
-          return snapshotBoardIssue(issue, {
-            lastFiredAtMs: fired.lastFiredAtMs,
-            nextDueAtMs: fired.nextDueAtMs,
-          });
+          return snapshotBoardIssue(
+            issue,
+            {
+              lastFiredAtMs: fired.lastFiredAtMs,
+              nextDueAtMs: fired.nextDueAtMs,
+            },
+            ws.tag,
+          );
         });
         return { wsId: ws.id, tag: ws.tag, status: 'ok', issues };
       }),
@@ -693,7 +787,7 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
       const { entries } = await inboxStore.read({ workspaceId: ws.id, limit: 1000 });
       inboxReports = inboxReportsForIssue(entries, issue.id);
     }
-    return { issue: detailIssue(issue, markers), runs, inboxReports };
+    return { issue: detailIssue(issue, markers, ws.tag), runs, inboxReports };
   };
 
   // Resolve a `[[name]]` token to the issues (across ALL workspaces) that claim
@@ -761,7 +855,10 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
         // carries AQ_SESSION_ID; a spawn carries AQ_RUN_ID XOR AQ_SESSION_ID. The
         // `alice` shim forwards it as the `x-openalice-session` header, resolved
         // server-side against the session registry — agent never sees it.
-        { AQ_SESSION_ID: ctx.recordId },
+        {
+          ...terminalThemeEnv(ctx.terminalTheme),
+          AQ_SESSION_ID: ctx.recordId,
+        },
       );
 
       // path.trace — single line capturing every path the spawn touches. The
@@ -813,8 +910,13 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
     const out: Record<string, AgentAvailability> = {};
     const env = { ...process.env, PATH: buildCliPath(process.env) };
     for (const a of adapters.list()) {
+      const override = isAgentRuntime(a) ? runtimeInstallOverride(a.id, env) : null;
+      if (override) {
+        out[a.id] = override;
+        continue;
+      }
       // No declared binary (shell → `$SHELL`) is always available.
-      out[a.id] = a.binary ? detectBinary(a.binary, { env }) : { installed: true, path: null };
+      out[a.id] = a.binary ? detectAgentBinary(a.id, a.binary, { env }) : { installed: true, path: null };
     }
     return out;
   };
@@ -893,6 +995,9 @@ export async function createWorkspaceService(opts: CreateWorkspaceServiceOptions
     scheduleScanner.stop();
     pool.disposeAll('plugin shutdown');
     transcriptWatcher.disposeAll();
+    await processLock.release().catch((err) =>
+      launcherLogger.warn('workspaces.process_lock_release_failed', { err }),
+    );
   };
 
   return {

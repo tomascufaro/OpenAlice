@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal as Xterm } from '@xterm/xterm';
+import { Monitor, Moon, Sun, type LucideIcon } from 'lucide-react';
 import '@xterm/xterm/css/xterm.css';
 
 import {
@@ -11,14 +12,17 @@ import {
   type ClientControlMessage,
 } from './protocol';
 import { attachWebglRenderer } from './renderer';
-import { darkTheme, lightTheme } from './theme';
 import {
   describeTerminalInput,
   keySignature,
   TERMINAL_FONT_FAMILY,
   type KeyMap,
 } from './terminalInput';
-import { useEffectiveTheme } from '../../theme/useEffectiveTheme';
+import {
+  useResolvedTerminalTheme,
+  useTerminalThemeStore,
+  type TerminalThemePreference,
+} from './terminalTheme';
 // Lazy-import so the demo subtree (transcripts, fixtures, handlers) is
 // dynamic-imported only when demo mode is actually on. With a static import,
 // Rollup is conservative about module side-effects (the transcript file
@@ -30,7 +34,116 @@ const DemoTerminalReplay = lazy(() =>
 
 export type { KeyMap } from './terminalInput';
 
-type Status = 'connecting' | 'reconnecting' | 'connected' | 'closed' | 'error' | 'kicked';
+type Status = 'connecting' | 'reconnecting' | 'connected' | 'closed' | 'error' | 'kicked' | 'locked';
+
+interface SocketMessageEventLike {
+  readonly data: unknown;
+}
+
+interface SocketCloseEventLike {
+  readonly code: number;
+}
+
+interface SocketLike {
+  readonly OPEN: number;
+  readyState: number;
+  binaryType?: BinaryType;
+  send(data: string | Uint8Array): void;
+  close(): void;
+  addEventListener(type: 'open', cb: () => void): void;
+  addEventListener(type: 'message', cb: (ev: SocketMessageEventLike) => void): void;
+  addEventListener(type: 'close', cb: (ev: SocketCloseEventLike) => void): void;
+  addEventListener(type: 'error', cb: () => void): void;
+}
+
+class ElectronPtySocket implements SocketLike {
+  readonly OPEN = 1;
+  readonly CLOSED = 3;
+  readyState = 0;
+
+  private readonly connectionId: string;
+  private readonly bridge: NonNullable<Window['openAlice']>['pty'];
+  private readonly listeners = {
+    open: new Set<() => void>(),
+    message: new Set<(ev: SocketMessageEventLike) => void>(),
+    close: new Set<(ev: SocketCloseEventLike) => void>(),
+    error: new Set<() => void>(),
+  };
+  private readonly unsubscribers: Array<() => void> = [];
+  private opened = false;
+
+  constructor(input: { sessionId: string; cols: number; rows: number; controllerId: string; takeover?: boolean }) {
+    const bridge = window.openAlice?.pty;
+    if (!bridge) throw new Error('Electron PTY bridge is unavailable');
+    this.bridge = bridge;
+    this.connectionId = bridge.connect(input);
+    this.unsubscribers.push(
+      bridge.onMessage(this.connectionId, (msg) => {
+        if (msg.type === 'control') {
+          const text = typeof msg.data === 'string' ? msg.data : String(msg.data ?? '');
+          const control = parseServerControl(text);
+          if (control?.type === 'attached') this.emitOpen();
+          this.emitMessage(text);
+        } else {
+          this.emitMessage(toArrayBuffer(msg.data));
+        }
+      }),
+      bridge.onClose(this.connectionId, (msg) => {
+        this.readyState = this.CLOSED;
+        for (const cb of this.listeners.close) cb({ code: msg.code });
+        this.cleanup();
+      }),
+    );
+  }
+
+  send(data: string | Uint8Array): void {
+    if (this.readyState !== this.OPEN) return;
+    if (typeof data === 'string') {
+      const parsed = parseResizeControl(data);
+      if (parsed) this.bridge.resize(this.connectionId, parsed.cols, parsed.rows);
+      return;
+    }
+    this.bridge.send(this.connectionId, data);
+  }
+
+  close(): void {
+    if (this.readyState === this.CLOSED) return;
+    this.readyState = this.CLOSED;
+    this.bridge.close(this.connectionId);
+    this.cleanup();
+  }
+
+  addEventListener(type: 'open', cb: () => void): void;
+  addEventListener(type: 'message', cb: (ev: SocketMessageEventLike) => void): void;
+  addEventListener(type: 'close', cb: (ev: SocketCloseEventLike) => void): void;
+  addEventListener(type: 'error', cb: () => void): void;
+  addEventListener(
+    type: 'open' | 'message' | 'close' | 'error',
+    cb: (() => void) | ((ev: SocketMessageEventLike | SocketCloseEventLike) => void),
+  ): void {
+    if (type === 'open') {
+      this.listeners.open.add(cb as () => void);
+      if (this.readyState === this.OPEN) queueMicrotask(cb as () => void);
+    } else if (type === 'message') this.listeners.message.add(cb as (ev: SocketMessageEventLike) => void);
+    else if (type === 'close') this.listeners.close.add(cb as (ev: SocketCloseEventLike) => void);
+    else this.listeners.error.add(cb as () => void);
+  }
+
+  private emitMessage(data: unknown): void {
+    for (const cb of this.listeners.message) cb({ data });
+  }
+
+  private emitOpen(): void {
+    if (this.opened || this.readyState === this.CLOSED) return;
+    this.opened = true;
+    this.readyState = this.OPEN;
+    for (const cb of this.listeners.open) cb();
+  }
+
+  private cleanup(): void {
+    for (const unsub of this.unsubscribers.splice(0)) unsub();
+  }
+}
 
 interface ExitInfo {
   readonly code: number;
@@ -94,10 +207,14 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
   const [scrollbackTruncated, setScrollbackTruncated] = useState(false);
   const [exitInfo, setExitInfo] = useState<ExitInfo | null>(null);
   const [childExited, setChildExited] = useState(false);
+  const takeoverNextAttachRef = useRef(false);
+  const connectRef = useRef<(() => void) | null>(null);
 
   const wsId = props.wsId;
   const wsUrl = props.wsUrl;
   const sessionId = props.sessionId;
+  const controllerIdRef = useRef<string>('');
+  if (!controllerIdRef.current) controllerIdRef.current = getTerminalControllerId();
 
   const keyMapRef = useRef<KeyMap | undefined>(props.keyMap);
   keyMapRef.current = props.keyMap;
@@ -106,18 +223,28 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
   const onSessionLostRef = useRef<TerminalViewProps['onSessionLost']>(props.onSessionLost);
   onSessionLostRef.current = props.onSessionLost;
 
-  // Terminal palette follows the app theme (auto resolves via the OS). Read the
-  // current value through a ref so the connect effect doesn't recreate the
+  // Terminal palette is its own preference, not just the app chrome theme. Read
+  // the current value through a ref so the connect effect doesn't recreate the
   // terminal on a theme flip — a separate effect re-skins the live instance.
-  const effectiveTheme = useEffectiveTheme();
-  const xtermTheme = effectiveTheme === 'light' ? lightTheme : darkTheme;
-  const themeRef = useRef(xtermTheme);
-  themeRef.current = xtermTheme;
+  const { profile: terminalThemeProfile } = useResolvedTerminalTheme();
+  const themeRef = useRef(terminalThemeProfile.xtermTheme);
+  themeRef.current = terminalThemeProfile.xtermTheme;
+  const appliedThemeVariantRef = useRef(terminalThemeProfile.variant);
   const termRef = useRef<Xterm | null>(null);
 
   useEffect(() => {
-    if (termRef.current) termRef.current.options.theme = xtermTheme;
-  }, [xtermTheme]);
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = terminalThemeProfile.xtermTheme;
+
+    if (appliedThemeVariantRef.current === terminalThemeProfile.variant) return;
+    appliedThemeVariantRef.current = terminalThemeProfile.variant;
+    // Muxy-style terminal theming treats the raw PTY stream as the source of
+    // truth and the active theme as renderer config. Reattach so the server
+    // replays raw scrollback through the current xterm theme/profile, without
+    // mutating the output bytes themselves.
+    connectRef.current?.();
+  }, [terminalThemeProfile]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -165,13 +292,16 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
         session: sessionId,
         cols: String(lastCols),
         rows: String(lastRows),
+        client: controllerIdRef.current,
+        kind: 'web',
       });
+      if (takeoverNextAttachRef.current) params.set('takeover', '1');
       return `${wsUrl ?? defaultWsUrl()}?${params.toString()}`;
     };
 
     // The live socket is swapped out on every (re)connect; senders read it at
     // call time so xterm's stdin/binary subs survive a reconnect untouched.
-    let activeWs: WebSocket | null = null;
+    let activeWs: SocketLike | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
     let hasConnectedOnce = false;
@@ -182,7 +312,7 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
 
     const sendControl = (msg: ClientControlMessage): void => {
       const ws = activeWs;
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+      if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
     };
 
     const encoder = new TextEncoder();
@@ -202,7 +332,7 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
     const sendStdin = (data: string): void => {
       logInput('stdin', data);
       const ws = activeWs;
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
+      if (ws && ws.readyState === ws.OPEN) ws.send(encoder.encode(data));
     };
 
     const safeFocus = (): void => {
@@ -302,13 +432,32 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
 
     function connect(): void {
       if (teardown) return;
-      const ws = new WebSocket(currentUrl());
+      const previousWs = activeWs;
+      activeWs = null;
+      try {
+        previousWs?.close();
+      } catch {
+        // Best-effort detach before a deliberate reattach/replay.
+      }
+      // Electron app mode has a preload PTY bridge, so it can bypass the
+      // renderer -> localhost WebSocket hop. Browser/dev/Docker keep the
+      // WebSocket path with the exact same xterm lifecycle.
+      const ws: SocketLike = window.openAlice?.pty
+        ? new ElectronPtySocket({
+            sessionId,
+            cols: lastCols,
+            rows: lastRows,
+            controllerId: controllerIdRef.current,
+            takeover: takeoverNextAttachRef.current,
+          })
+        : new WebSocket(currentUrl());
       ws.binaryType = 'arraybuffer';
       activeWs = ws;
       setStatus(hasConnectedOnce ? 'reconnecting' : 'connecting');
 
       ws.addEventListener('open', () => {
         attempts = 0;
+        takeoverNextAttachRef.current = false;
         // A reconnect re-attaches to a live xterm that already shows the
         // pre-drop screen, but the server cold-replays its full ring buffer on
         // every attach. Reset first so the replay repaints cleanly instead of
@@ -364,6 +513,10 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
           setStatus('kicked');
           return;
         }
+        if (ev.code === 4409) {
+          setStatus('locked');
+          return;
+        }
         if (ev.code === 4404) {
           onSessionLostRef.current?.();
           setStatus('closed');
@@ -377,11 +530,12 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
       // reconnect so we don't double-schedule.
       ws.addEventListener('error', () => {});
     }
+    connectRef.current = connect;
 
     const stdinSub = term.onData(sendStdin);
     const binarySub = term.onBinary((d) => {
       const ws = activeWs;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!ws || ws.readyState !== ws.OPEN) return;
       logInput('binary', d);
       const bytes = new Uint8Array(d.length);
       for (let i = 0; i < d.length; i++) bytes[i] = d.charCodeAt(i) & 0xff;
@@ -428,6 +582,7 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
       } catch {
         // ignore
       }
+      if (connectRef.current === connect) connectRef.current = null;
       webgl?.dispose();
       term.dispose();
       termRef.current = null;
@@ -449,8 +604,54 @@ export function TerminalView(props: TerminalViewProps): ReactElement {
               }`
             : ''}
         </span>
+        {status === 'locked' && (
+          <button
+            type="button"
+            className="terminal-header-action"
+            onClick={() => {
+              takeoverNextAttachRef.current = true;
+              setStatus('connecting');
+              connectRef.current?.();
+            }}
+            title="take over this session"
+          >
+            take over
+          </button>
+        )}
+        <TerminalThemeControl />
       </header>
       <div ref={containerRef} className="terminal-host" />
+    </div>
+  );
+}
+
+function TerminalThemeControl(): ReactElement {
+  const { preference, appTheme } = useResolvedTerminalTheme();
+  const setPreference = useTerminalThemeStore((s) => s.setPreference);
+  const options: Array<{
+    preference: TerminalThemePreference;
+    label: string;
+    icon: LucideIcon;
+  }> = [
+    { preference: 'follow', label: `Follow app (${appTheme})`, icon: Monitor },
+    { preference: 'dark', label: 'Dark terminal', icon: Moon },
+    { preference: 'light', label: 'Light terminal', icon: Sun },
+  ];
+  return (
+    <div className="terminal-theme-switch" role="group" aria-label="Terminal theme">
+      {options.map(({ preference: value, label, icon: Icon }) => (
+        <button
+          key={value}
+          type="button"
+          className={`terminal-theme-option ${preference === value ? 'active' : ''}`}
+          aria-label={label}
+          aria-pressed={preference === value}
+          title={label}
+          onClick={() => setPreference(value)}
+        >
+          <Icon size={12} strokeWidth={2.2} aria-hidden="true" />
+        </button>
+      ))}
     </div>
   );
 }
@@ -463,6 +664,7 @@ function StatusDot({ status }: { status: Status }): ReactElement {
     closed: '#6e7681',
     error: '#ff7b72',
     kicked: '#d2a8ff',
+    locked: '#d2a8ff',
   };
   return (
     <span
@@ -472,6 +674,17 @@ function StatusDot({ status }: { status: Status }): ReactElement {
       aria-label={status}
     />
   );
+}
+
+function getTerminalControllerId(): string {
+  return `web:${randomId()}`;
+}
+
+function randomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function defaultWsUrl(): string {
@@ -499,4 +712,29 @@ function safeFit(fit: FitAddon): void {
   } catch {
     // Container may have zero size during initial layout; ignore.
   }
+}
+
+function parseResizeControl(data: string): { cols: number; rows: number } | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const msg = value as Record<string, unknown>;
+  if (msg['type'] !== 'resize') return null;
+  const cols = typeof msg['cols'] === 'number' ? msg['cols'] : Number.NaN;
+  const rows = typeof msg['rows'] === 'number' ? msg['rows'] : Number.NaN;
+  if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) return null;
+  return { cols: Math.floor(cols), rows: Math.floor(rows) };
+}
+
+function toArrayBuffer(data: unknown): ArrayBuffer {
+  if (data instanceof ArrayBuffer) return data;
+  if (data instanceof Uint8Array) {
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  }
+  if (Array.isArray(data)) return new Uint8Array(data).buffer;
+  return new Uint8Array().buffer;
 }

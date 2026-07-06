@@ -4,6 +4,11 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      mirror_tag:
+        description: Existing release tag to mirror to the download CDN without cutting a new release.
+        required: false
+        type: string
 
 jobs:
   release:
@@ -16,8 +21,8 @@ jobs:
       # desktop build matrix gates on this — a full per-platform Electron build
       # is expensive (mac runners bill 10×), so it must NOT run on every master
       # push, only when a new tag/release was created.
-      created: ${{ steps.check.outputs.exists == 'false' }}
-      tag: ${{ steps.version.outputs.tag }}
+      created: ${{ !github.event.inputs.mirror_tag && steps.check.outputs.exists == 'false' }}
+      tag: ${{ github.event.inputs.mirror_tag || steps.version.outputs.tag }}
 
     steps:
       - uses: actions/checkout@v4
@@ -48,11 +53,11 @@ jobs:
           fi
 
       - name: Install git-cliff
-        if: steps.check.outputs.exists == 'false'
+        if: steps.check.outputs.exists == 'false' && !github.event.inputs.mirror_tag
         uses: kenji-miyake/setup-git-cliff@v2
 
       - name: Generate release notes
-        if: steps.check.outputs.exists == 'false'
+        if: steps.check.outputs.exists == 'false' && !github.event.inputs.mirror_tag
         id: notes
         run: |
           # Generate notes for this version only (since last tag).
@@ -69,7 +74,7 @@ jobs:
           fi
 
       - name: Create tag and GitHub Release
-        if: steps.check.outputs.exists == 'false'
+        if: steps.check.outputs.exists == 'false' && !github.event.inputs.mirror_tag
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
@@ -81,7 +86,7 @@ jobs:
   publish-opentypebb:
     runs-on: ubuntu-latest
     needs: release
-    if: needs.release.result == 'success'
+    if: needs.release.result == 'success' && !github.event.inputs.mirror_tag
     permissions:
       contents: read
       packages: write
@@ -148,7 +153,7 @@ jobs:
   # Windows code-signing certificate exists.
   build-desktop:
     needs: release
-    if: needs.release.outputs.created == 'true'
+    if: needs.release.outputs.created == 'true' && !github.event.inputs.mirror_tag
     strategy:
       fail-fast: false
       matrix:
@@ -183,6 +188,9 @@ jobs:
 
       - name: Build Alice + UTA + desktop shell
         run: pnpm electron:build
+
+      - name: Vendor managed workspace runtime
+        run: pnpm vendor:runtime
 
       - name: Write Apple notarization API key
         if: runner.os == 'macOS'
@@ -256,7 +264,7 @@ jobs:
 
   mirror-release-assets:
     needs: [release, build-desktop]
-    if: needs.release.outputs.created == 'true'
+    if: always() && ((needs.release.outputs.created == 'true' && needs.build-desktop.result == 'success') || github.event.inputs.mirror_tag)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -265,32 +273,91 @@ jobs:
       - name: Download release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.release.outputs.tag }}
+          TAG: ${{ github.event.inputs.mirror_tag || needs.release.outputs.tag }}
         run: |
           mkdir -p dist/r2-upload
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist/r2-upload --clobber
 
-      - name: Prepare CDN update channel aliases
+      - name: Prepare CDN download aliases
         env:
-          TAG: ${{ needs.release.outputs.tag }}
+          TAG: ${{ github.event.inputs.mirror_tag || needs.release.outputs.tag }}
+          DOWNLOAD_BASE_URL: ${{ secrets.DOWNLOAD_BASE_URL }}
         run: |
-          rm -f dist/r2-upload/builder-debug.yml
+          node - <<'NODE'
+          const fs = require('fs')
+          const path = require('path')
 
-          VERSION="${TAG#v}"
-          if [[ "$VERSION" != *-* ]]; then
-            exit 0
-          fi
+          const outDir = path.join('dist', 'r2-upload')
+          const tag = process.env.TAG
+          const version = tag.replace(/^v/, '')
+          const baseUrl = (process.env.DOWNLOAD_BASE_URL || 'https://download.openalice.ai').replace(/\/+$/, '')
+          const releaseNotesUrl = `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/tag/${tag}`
 
-          CHANNEL="${VERSION#*-}"
-          CHANNEL="${CHANNEL%%.*}"
+          fs.rmSync(path.join(outDir, 'builder-debug.yml'), { force: true })
 
-          if [ -f dist/r2-upload/latest-mac.yml ]; then
-            cp dist/r2-upload/latest-mac.yml "dist/r2-upload/${CHANNEL}-mac.yml"
-          fi
+          const names = () => fs.readdirSync(outDir)
+          const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const versionPattern = escapeRegExp(version)
+          const find = (pattern) => names().find((name) => pattern.test(name))
+          const copyAlias = (source, alias) => {
+            if (!source) return null
+            if (source === alias) return alias
+            fs.copyFileSync(path.join(outDir, source), path.join(outDir, alias))
+            console.log(`Created ${alias} from ${source}`)
+            return alias
+          }
+          const parseYamlScalar = (content, key) => {
+            const match = content.match(new RegExp(`(?:^|\\n)${key}:\\s*['"]?([^'"\\n]+)['"]?`))
+            return match?.[1]?.trim() || null
+          }
 
-          if [ -f dist/r2-upload/latest.yml ]; then
-            cp dist/r2-upload/latest.yml "dist/r2-upload/${CHANNEL}.yml"
-          fi
+          if (version.includes('-')) {
+            const channel = version.split('-')[1].split('.')[0]
+            copyAlias(find(/^latest-mac\.yml$/), `${channel}-mac.yml`)
+            copyAlias(find(/^latest\.yml$/), `${channel}.yml`)
+          }
+
+          const macArm64Dmg = find(new RegExp(`^OpenAlice-${versionPattern}-arm64\\.dmg$`))
+          const macArm64Zip = find(new RegExp(`^OpenAlice-${versionPattern}-arm64-mac\\.zip$`))
+          const windowsX64Exe = find(new RegExp(`^OpenAlice\\.Setup\\.${versionPattern}\\.exe$`))
+          const windowsX64Blockmap = find(new RegExp(`^OpenAlice\\.Setup\\.${versionPattern}\\.exe\\.blockmap$`))
+
+          copyAlias(macArm64Dmg, 'mac-arm64.dmg')
+          copyAlias(macArm64Zip, 'mac-arm64.zip')
+          copyAlias(windowsX64Exe, 'windows-x64.exe')
+
+          const betaYmlPath = path.join(outDir, 'beta.yml')
+          const windowsFeedExe = fs.existsSync(betaYmlPath)
+            ? parseYamlScalar(fs.readFileSync(betaYmlPath, 'utf8'), 'path')
+            : null
+          if (windowsFeedExe?.endsWith('.exe')) {
+            copyAlias(windowsX64Exe, windowsFeedExe)
+            copyAlias(windowsX64Blockmap, `${windowsFeedExe}.blockmap`)
+          }
+
+          const manifest = {
+            version,
+            publishedAt: new Date().toISOString(),
+            releaseNotesUrl,
+            feeds: {
+              mac: `${baseUrl}/${version.includes('-') ? `${version.split('-')[1].split('.')[0]}-mac.yml` : 'latest-mac.yml'}`,
+              windows: `${baseUrl}/${version.includes('-') ? `${version.split('-')[1].split('.')[0]}.yml` : 'latest.yml'}`,
+            },
+            macArm64Dmg: `${baseUrl}/mac-arm64.dmg`,
+            macArm64Zip: macArm64Zip ? `${baseUrl}/mac-arm64.zip` : null,
+            windowsX64Exe: windowsX64Exe ? `${baseUrl}/windows-x64.exe` : null,
+            versioned: {
+              macArm64Dmg: macArm64Dmg ? `${baseUrl}/${macArm64Dmg}` : null,
+              macArm64Zip: macArm64Zip ? `${baseUrl}/${macArm64Zip}` : null,
+              windowsX64Exe: windowsX64Exe ? `${baseUrl}/${windowsX64Exe}` : null,
+            },
+          }
+
+          fs.writeFileSync(
+            path.join(outDir, 'manifest.json'),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          )
+          NODE
 
       - name: Install AWS CLI
         run: |
@@ -311,6 +378,10 @@ jobs:
           aws s3 cp dist/r2-upload "s3://${R2_BUCKET}/" \
             --recursive \
             --exclude "*.yml" \
+            --exclude "manifest.json" \
+            --exclude "mac-arm64.dmg" \
+            --exclude "mac-arm64.zip" \
+            --exclude "windows-x64.exe" \
             --cache-control "public, max-age=31536000, immutable" \
             --endpoint-url "$ENDPOINT"
 
@@ -322,10 +393,36 @@ jobs:
             --content-type "text/yaml" \
             --endpoint-url "$ENDPOINT"
 
+          aws s3 cp dist/r2-upload/manifest.json "s3://${R2_BUCKET}/manifest.json" \
+            --cache-control "no-cache" \
+            --content-type "application/json" \
+            --endpoint-url "$ENDPOINT"
+
+          if [ -f dist/r2-upload/mac-arm64.dmg ]; then
+            aws s3 cp dist/r2-upload/mac-arm64.dmg "s3://${R2_BUCKET}/mac-arm64.dmg" \
+              --cache-control "no-cache" \
+              --content-type "application/x-apple-diskimage" \
+              --endpoint-url "$ENDPOINT"
+          fi
+
+          if [ -f dist/r2-upload/mac-arm64.zip ]; then
+            aws s3 cp dist/r2-upload/mac-arm64.zip "s3://${R2_BUCKET}/mac-arm64.zip" \
+              --cache-control "no-cache" \
+              --content-type "application/zip" \
+              --endpoint-url "$ENDPOINT"
+          fi
+
+          if [ -f dist/r2-upload/windows-x64.exe ]; then
+            aws s3 cp dist/r2-upload/windows-x64.exe "s3://${R2_BUCKET}/windows-x64.exe" \
+              --cache-control "no-cache" \
+              --content-type "application/vnd.microsoft.portable-executable" \
+              --endpoint-url "$ENDPOINT"
+          fi
+
       - name: Verify CDN metadata
         env:
           DOWNLOAD_BASE_URL: ${{ secrets.DOWNLOAD_BASE_URL }}
-          TAG: ${{ needs.release.outputs.tag }}
+          TAG: ${{ github.event.inputs.mirror_tag || needs.release.outputs.tag }}
         run: |
           BASE_URL="${DOWNLOAD_BASE_URL%/}"
           VERSION="${TAG#v}"
@@ -338,9 +435,27 @@ jobs:
 
           if [ "$CHANNEL" = "latest" ]; then
             MAC_METADATA="latest-mac.yml"
+            WINDOWS_METADATA="latest.yml"
           else
             MAC_METADATA="${CHANNEL}-mac.yml"
+            WINDOWS_METADATA="${CHANNEL}.yml"
           fi
 
           curl -fsSI "${BASE_URL}/${MAC_METADATA}"
+          curl -fsSI "${BASE_URL}/${WINDOWS_METADATA}"
           curl -fsSI "${BASE_URL}/OpenAlice-${VERSION}-arm64.dmg"
+          curl -fsSI "${BASE_URL}/mac-arm64.dmg"
+          curl -fsSI "${BASE_URL}/windows-x64.exe"
+          curl -fsSI "${BASE_URL}/manifest.json"
+
+          WINDOWS_FEED_EXE=$(
+            WINDOWS_METADATA="$WINDOWS_METADATA" node -e "const fs=require('fs');const content=fs.readFileSync('dist/r2-upload/'+process.env.WINDOWS_METADATA,'utf8');const match=content.match(/(?:^|\\n)path:\\s*['\"]?([^'\"\\n]+)['\"]?/);process.stdout.write(match?.[1]?.trim()||'')"
+          )
+
+          if [ -n "$WINDOWS_FEED_EXE" ]; then
+            WINDOWS_FEED_URL=$(
+              WINDOWS_FEED_EXE="$WINDOWS_FEED_EXE" node -e "process.stdout.write(encodeURI(process.env.WINDOWS_FEED_EXE))"
+            )
+            curl -fsSI "${BASE_URL}/${WINDOWS_FEED_URL}"
+            curl -fsSI "${BASE_URL}/${WINDOWS_FEED_URL}.blockmap"
+          fi

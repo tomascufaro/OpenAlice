@@ -16,7 +16,7 @@ export const configKeysHandlers = [
       compaction: { maxContextTokens: 0, maxOutputTokens: 0 },
       snapshot: { enabled: false, every: '1h' },
       trading: { observeExternalOrdersEvery: '15m' },
-      mcp: { port: 47332 },
+      mcp: { enabled: false, port: 47332 },
       marketData: {
         enabled: true,
         providers: { equity: 'yfinance', crypto: 'yfinance', currency: 'yfinance', commodity: 'yfinance' },
@@ -66,5 +66,16 @@ export const configKeysHandlers = [
   http.put('/api/config/workspace-credential-defaults', async ({ request }) => {
     const body = (await request.json().catch(() => ({}))) as { defaults?: unknown }
     return HttpResponse.json({ defaults: body.defaults ?? {} })
+  }),
+
+  http.get('/api/config/workspace-default-agent', () => HttpResponse.json({ agent: 'claude' })),
+  http.put('/api/config/workspace-default-agent', async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as { agent?: unknown }
+    return HttpResponse.json({ agent: typeof body.agent === 'string' ? body.agent : null })
+  }),
+  http.get('/api/config/issue-default-agent', () => HttpResponse.json({ agent: 'pi' })),
+  http.put('/api/config/issue-default-agent', async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as { agent?: unknown }
+    return HttpResponse.json({ agent: typeof body.agent === 'string' ? body.agent : null })
   }),
 ]

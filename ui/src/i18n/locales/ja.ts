@@ -22,10 +22,12 @@ export const ja: Resources = {
       system: 'システム',
     },
     betaDescription:
-      '動作はしますが、まだ安定していません。Trading-as-Git とポートフォリオは複数ブローカーを統合した状態を表示しますが、その基盤となる抽象はまだ固まっていません——試用は可能ですが、スキーマや UX の安定性に依存しないでください。オートメーションは動作しますが、現在の Harness アーキテクチャではトリガーチェーンが閉じていないため、Harness のスケジューリングが実装されるまでエンドツーエンドで発火できません。ブローカー接続の設定は 設定 → 取引 にあります。',
+      '利用可能ですが、状態モデルと UX はまだ変わる可能性があります。ブローカー接続は 設定 → 取引 で行います。',
     unread: '未読 {{count}} 件',
     pendingPush: 'プッシュ待ち {{count}} 件',
     about: '{{label}}について',
+    collapseRail: 'アクティビティバーを折りたたむ',
+    expandRail: 'アクティビティバーを展開',
   },
   settings: {
     title: '設定',
@@ -47,7 +49,9 @@ export const ja: Resources = {
     category: {
       general: '一般',
       aiProvider: 'AI プロバイダー',
+      agentPermissions: 'エージェント権限',
       trading: '取引',
+      issues: 'Issues',
       mcpServer: 'MCP サーバー',
       marketData: 'マーケットデータ',
       newsSources: 'ニュースソース',
@@ -62,6 +66,33 @@ export const ja: Resources = {
       allowAiTradingConfirmTitle: 'AI 自動取引を有効にしますか？',
       allowAiTradingConfirmBody: '有効にすると、AI は毎回確認することなくブローカーに実際の注文を送信できます。UTA の取引インターフェースはまだ不安定で、精度やパラメータの問題がある可能性があります。実資金の口座での使用は強く非推奨です——ペーパー / デモ口座を使用してください。',
       allowAiTradingConfirmCta: '自動取引を有効化',
+    },
+    agentPermissions: {
+      title: 'エージェント権限',
+      mode: {
+        title: '取引モード',
+        description: 'Alice とワークスペースエージェントのグローバルなブローカー権限。',
+        lite: {
+          label: 'Lite',
+          description: 'UTA は接続しません。Alice はブローカー口座なしで分析します。',
+        },
+        readonly: {
+          label: 'Readonly',
+          description: 'UTA は口座とポジションを読み取れます。ブローカーへの書き込みはブロックされます。',
+        },
+        pro: {
+          label: 'Pro',
+          description: 'UTA を有効化し、口座ごとの権限と承認設定を適用します。',
+        },
+        saving: '切り替え中',
+        envLocked: 'このインストールは環境変数でロックされています。',
+        source: '現在のソース: {{source}}',
+      },
+      aiPush: {
+        title: 'AI 取引 push',
+        description: 'エージェントが手動承認なしで commit 済みのブローカー書き込みを実行できるか。',
+        proOnly: '現在の取引モードではブローカー書き込みがブロックされます。このスイッチは Pro モードでのみ実行に反映されます。',
+      },
     },
     persona: {
       title: 'ペルソナ',
@@ -136,8 +167,8 @@ export const ja: Resources = {
     agentMissing: '{{name}} はこのマシンにインストールされていません。',
     installLabel: 'インストール',
     installDocs: 'セットアップ手順',
-    noAgentsTitle: 'エージェントランタイムが見つかりません',
-    noAgentsBody: 'Alice とチャットを始めるには、コーディングエージェント CLI（例: Claude Code）をこのマシンにインストールしてください。',
+    noAgentsTitle: '管理ランタイムが見つかりません',
+    noAgentsBody: 'OpenAlice には通常、ワークスペースチャット用の Pi が同梱されます。パッケージ版でこの表示が出る場合は、ランタイム同梱を確認してください。確認中も Lite モードで続行できます。',
     selectCredential: 'AI プロバイダー',
     configureProvider: 'AI プロバイダーを設定',
     noCredBody: '{{name}} には AI プロバイダーが設定されていません。追加するとチャットを開始できます。',

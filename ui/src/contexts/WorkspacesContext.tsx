@@ -28,9 +28,12 @@ import { useTranslation } from 'react-i18next'
 import '../components/workspace/workspaces.css'
 
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { useResolvedTerminalThemeVariant } from '../components/workspace/terminalTheme'
 import { WorkspaceAIConfigModal } from '../components/workspace/WorkspaceAIConfigModal'
 import {
   deleteSession as apiDeleteSession,
+  type AgentId,
+  getIssueDefaultAgent,
   getWorkspaceDefaultAgent,
   listAgents,
   listTemplates,
@@ -38,6 +41,7 @@ import {
   pauseSession as apiPauseSession,
   quickChat as apiQuickChat,
   resumeSession as apiResumeSession,
+  setIssueDefaultAgent as apiSetIssueDefaultAgent,
   setWorkspaceDefaultAgent as apiSetWorkspaceDefaultAgent,
   spawnSession,
   updateWorkspaceMetadata,
@@ -58,6 +62,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
   const [templatesLoaded, setTemplatesLoaded] = useState(false)
   const [agents, setAgents] = useState<AgentInfo[]>([])
   const [defaultAgent, setDefaultAgentState] = useState<string | null>(null)
+  const [issueDefaultAgent, setIssueDefaultAgentState] = useState<string | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   // Don't reconcile orphan tabs until we've successfully fetched the
   // workspaces list at least once — otherwise the initial `[]` looks like
@@ -68,9 +73,10 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
   // gear button (no workspace tab needed) and the WorkspacePage header
   // button share one modal instance — and the modal survives activity
   // switches (rendered here, not inside an activity-scoped component).
-  const [configuringWsId, setConfiguringWsId] = useState<string | null>(null)
+  const [configuringAgentTarget, setConfiguringAgentTarget] = useState<{ wsId: string; agent?: AgentId } | null>(null)
   const [pendingSessionDelete, setPendingSessionDelete] = useState<{ wsId: string; sessionId: string } | null>(null)
   const { t } = useTranslation()
+  const terminalTheme = useResolvedTerminalThemeVariant()
 
   const openOrFocus = useWorkspace((s) => s.openOrFocus)
   const closeTab = useWorkspace((s) => s.closeTab)
@@ -99,6 +105,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
       .finally(() => setTemplatesLoaded(true))
     void listAgents().then(setAgents).catch(() => setAgents([]))
     void getWorkspaceDefaultAgent().then(setDefaultAgentState).catch(() => setDefaultAgentState(null))
+    void getIssueDefaultAgent().then(setIssueDefaultAgentState).catch(() => setIssueDefaultAgentState(null))
   }, [])
 
   // Reconcile tabs against the workspaces list. If a workspace or session
@@ -131,7 +138,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
   const spawn = useCallback(
     async (wsId: string, opts: SpawnOpts = {}, source?: WorkspaceSource): Promise<void> => {
       try {
-        const sess = await spawnSession(wsId, opts)
+        const sess = await spawnSession(wsId, { ...opts, terminalTheme })
         const nowIso = new Date().toISOString()
         const newRecord: SessionRecord = {
           id: sess.sessionId,
@@ -164,7 +171,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
         console.error('workspaces.spawn_failed', { wsId, opts, err })
       }
     },
-    [refresh, openOrFocus],
+    [refresh, openOrFocus, terminalTheme],
   )
 
   const setDefaultAgent = useCallback(async (agent: string | null): Promise<void> => {
@@ -172,9 +179,14 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
     setDefaultAgentState(saved)
   }, [])
 
+  const setIssueDefaultAgent = useCallback(async (agent: string | null): Promise<void> => {
+    const saved = await apiSetIssueDefaultAgent(agent)
+    setIssueDefaultAgentState(saved)
+  }, [])
+
   const quickChat = useCallback(
     async (prompt: string, agent?: string, credentialSlug?: string, targetWsId?: string): Promise<void> => {
-      const { workspace, session } = await apiQuickChat(prompt, agent, credentialSlug, targetWsId)
+      const { workspace, session } = await apiQuickChat(prompt, agent, credentialSlug, targetWsId, terminalTheme)
       const nowIso = new Date().toISOString()
       const newRecord: SessionRecord = {
         id: session.sessionId,
@@ -212,7 +224,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
       })
       void refresh()
     },
-    [refresh, openOrFocus],
+    [refresh, openOrFocus, terminalTheme],
   )
 
   const pauseSession = useCallback(
@@ -233,7 +245,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
 
   const resumeSession = useCallback(
     async (wsId: string, sessionId: string, source?: WorkspaceSource): Promise<void> => {
-      const resp = await apiResumeSession(wsId, sessionId)
+      const resp = await apiResumeSession(wsId, sessionId, terminalTheme)
       if (resp) {
         setWorkspaces((prev) =>
           patchSession(prev, wsId, sessionId, {
@@ -254,7 +266,7 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
       })
       void refresh()
     },
-    [refresh, openOrFocus],
+    [refresh, openOrFocus, terminalTheme],
   )
 
   const saveWorkspaceMetadata = useCallback(
@@ -319,26 +331,31 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
         templates,
         agents,
         defaultAgent,
+        issueDefaultAgent,
         listError,
         hasLoaded,
         templatesLoaded,
         refresh,
         spawn,
         setDefaultAgent,
+        setIssueDefaultAgent,
         quickChat,
         pauseSession,
         resumeSession,
         requestDeleteSession,
-        openAgentConfig: (wsId: string) => setConfiguringWsId(wsId),
+        openAgentConfig: (wsId: string, agent?: AgentId) =>
+          setConfiguringAgentTarget({ wsId, ...(agent ? { agent } : {}) }),
         saveWorkspaceMetadata,
         renameWorkspace,
       }}
     >
       {children}
-      {configuringWsId !== null && (
+      {configuringAgentTarget !== null && (
         <WorkspaceAIConfigModal
-          wsId={configuringWsId}
-          onClose={() => setConfiguringWsId(null)}
+          wsId={configuringAgentTarget.wsId}
+          initialAgent={configuringAgentTarget.agent}
+          initialSection={configuringAgentTarget.agent ? 'ai' : 'general'}
+          onClose={() => setConfiguringAgentTarget(null)}
         />
       )}
       {pendingSessionDelete !== null && (

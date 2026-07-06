@@ -54,7 +54,7 @@ export interface MarkerStore {
 
 export interface ScheduleScannerDeps {
   registry: WorkspaceRegistry
-  resolveAdapter: (meta: WorkspaceMeta, agentId?: string) => CliAdapter
+  resolveAdapter: (meta: WorkspaceMeta, agentId?: string) => CliAdapter | Promise<CliAdapter>
   dispatch: (
     meta: WorkspaceMeta,
     adapter: CliAdapter,
@@ -208,7 +208,7 @@ export class ScheduleScanner {
     agentId: string | undefined,
     nowMs: number,
   ): Promise<void> {
-    const adapter = this.deps.resolveAdapter(ws, agentId)
+    const adapter = await this.deps.resolveAdapter(ws, agentId)
     if (!adapter.capabilities.headless || !adapter.composeHeadlessCommand) {
       this.deps.logger.warn('schedule.adapter_not_headless', { wsId: ws.id, taskId, agent: adapter.id })
       return

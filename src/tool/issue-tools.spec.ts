@@ -123,7 +123,7 @@ describe('issue_list / issue_show', () => {
   it('lists compact rows and shows one in full', async () => {
     await run(issueCreateFactory.build(ctx()), { id: 'a', title: 'Alpha', priority: 'high' })
     await run(issueCreateFactory.build(ctx()), { id: 'b', title: 'Beta' })
-    const list = await run(issueListFactory.build(ctx()), {})
+    const list = await run(issueListFactory.build(ctx()), { mode: 'detailed' })
     expect(list.ok).toBe(true)
     expect((list.issues as Array<{ id: string }>).map((i) => i.id).sort()).toEqual(['a', 'b'])
 
@@ -135,6 +135,7 @@ describe('issue_list / issue_show', () => {
   it('issue_list returns empty (not an error) when no issues dir exists', async () => {
     const list = await run(issueListFactory.build(ctx()), {})
     expect(list.ok).toBe(true)
+    expect(list.mode).toBe('summary')
     expect(list.issues).toEqual([])
   })
 
@@ -220,11 +221,16 @@ describe('global board (ctx.board present)', () => {
       },
       ...over,
     }
-    return ctx({ board })
+    return ctx({
+      workspaceId: 'ws-a',
+      workspaceLabel: 'auto-quant',
+      resolveWorkspace: (id) => (id === 'ws-a' ? { id, dir, tag: 'auto-quant' } : null),
+      board,
+    })
   }
 
   it('issue_list flattens rows across every workspace, tags collisions, surfaces invalid', async () => {
-    const list = await run(issueListFactory.build(boardCtx()), {})
+    const list = await run(issueListFactory.build(boardCtx()), { mode: 'detailed' })
     expect(list.ok).toBe(true)
     const rows = list.issues as Array<{
       id: string
@@ -243,6 +249,34 @@ describe('global board (ctx.board present)', () => {
     expect(rows.find((r) => r.id === 'shared-b')?.nameCollision).toBe(true)
     // unreadable workspace surfaced, not dropped
     expect(list.invalid).toEqual([{ wsId: 'ws-c', tag: 'broken', error: 'retired .alice/issue.json' }])
+  })
+
+  it('issue_list summary hides low-priority global noise but keeps local issues', async () => {
+    const list = await run(issueListFactory.build(boardCtx()), {})
+    expect(list.ok).toBe(true)
+    expect(list.mode).toBe('summary')
+    expect(list.issues).toEqual([
+      expect.objectContaining({
+        id: 'alpha',
+        priority: 'high',
+        workspace: 'auto-quant',
+      }),
+      expect.objectContaining({
+        id: 'shared-a',
+        priority: 'none',
+        workspace: 'auto-quant',
+        nameCollision: true,
+      }),
+    ])
+    expect(list.summary).toMatchObject({
+      total: 3,
+      focus: 2,
+      hiddenActive: 1,
+      hiddenLowPriority: 1,
+      terminal: 0,
+      invalid: 1,
+    })
+    expect(list.hint).toMatch(/--mode detailed/)
   })
 
   it('issue_show returns full detail for a unique name', async () => {

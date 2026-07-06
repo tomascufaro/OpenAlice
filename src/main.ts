@@ -8,12 +8,20 @@ import { printLegacyDataNotice } from './core/legacy-data-notice.js'
 import { dataPath, defaultPath } from '@/core/paths.js'
 import type { Plugin, EngineContext } from './core/types.js'
 import { McpPlugin } from './server/mcp.js'
+import { LocalToolGatewayPlugin } from './server/local-tool-gateway.js'
 import { WebPlugin } from './webui/index.js'
 import { createWorkspaceServiceRef } from './webui/plugin.js'
 import { createThinkingTools } from './tool/thinking.js'
 import { createUTAClient } from '@traderalice/uta-protocol'
 import { UTAManagerSDK } from './services/uta-client/index.js'
 import { waitForUTAReady } from './services/uta-supervisor/health.js'
+import { resolveUTAUrl } from './services/uta-supervisor/url.js'
+import {
+  liteUnavailableReason,
+  readonlyMutationReason,
+  resolveTradingModePolicy,
+  type TradingModePolicy,
+} from './services/trading-mode.js'
 import { createTradingTools } from './tool/trading.js'
 import { SymbolIndex } from './domain/market-data/equity/index.js'
 import { CommodityCatalog } from './domain/market-data/commodity/index.js'
@@ -106,23 +114,41 @@ async function main() {
 
   // ==================== UTA SDK (HTTP boundary) ====================
   //
-  // Trading domain lives in the co-located UTA service spawned by
-  // Guardian (`scripts/guardian/dev.ts` in dev / Docker `tini` supervisor
-  // in prod). Alice talks to it through the SDK — broker init, snapshot
-  // scheduling, FX, and ephemeral-UTA purges all live in UTA's
-  // `services/uta/src/main.ts`.
+  // Trading domain lives in the UTA carrier. Guardian normally spawns it
+  // beside Alice, but UTA is optional: Alice can boot in lite mode while the
+  // proxy reports trading unavailable. Explicit OPENALICE_LITE_MODE disables
+  // SDK carrier calls locally; ordinary offline mode can recover when the
+  // carrier appears at the resolved URL.
 
-  const utaUrl = process.env['OPENALICE_UTA_URL']
-  if (!utaUrl) {
-    throw new Error('OPENALICE_UTA_URL not set — Guardian must spawn the UTA service before Alice boots')
+  const initialTradingMode = await resolveTradingModePolicy(config)
+  const currentTradingModePolicy = (): TradingModePolicy => {
+    const envLockedMode = initialTradingMode.source === 'env' ? initialTradingMode.mode : null
+    if (envLockedMode) return { ...initialTradingMode, mode: envLockedMode, source: 'env', envLocked: true }
+    return {
+      ...initialTradingMode,
+      mode: config.trading.mode ?? initialTradingMode.mode,
+      source: config.trading.mode ? 'config' : initialTradingMode.source,
+      envLocked: false,
+    }
   }
+  const utaDisabled = currentTradingModePolicy().mode === 'lite'
+  const utaUrl = resolveUTAUrl()
   const utaClient = createUTAClient({ baseUrl: utaUrl })
-  const utaHealth = await waitForUTAReady({ baseUrl: utaUrl, timeoutMs: 15_000 })
-  if (!utaHealth) {
-    throw new Error(`UTA service at ${utaUrl} did not become ready within 15s`)
+  if (utaDisabled) {
+    console.warn('uta: disabled by trading mode lite — continuing without trading carrier')
+  } else {
+    const utaHealth = await waitForUTAReady({ baseUrl: utaUrl, timeoutMs: 750 })
+    if (utaHealth) {
+      console.log(`uta: ready (${utaHealth.utas} accounts, startedAt=${utaHealth.startedAt})`)
+    } else {
+      console.warn(`uta: unavailable at ${utaUrl} — continuing in lite mode`)
+    }
   }
-  console.log(`uta: ready (${utaHealth.utas} accounts, startedAt=${utaHealth.startedAt})`)
-  const utaManager = new UTAManagerSDK({ client: utaClient })
+  const utaManager = new UTAManagerSDK({
+    client: utaClient,
+    unavailableReason: () => liteUnavailableReason(currentTradingModePolicy()),
+    readonlyMutationReason: () => readonlyMutationReason(currentTradingModePolicy()),
+  })
 
   // ==================== Persona ====================
   // The persona file is seeded on first run so the user has an editable
@@ -303,10 +329,21 @@ async function main() {
   // workspaceServiceRef is created earlier (Cron Listener section) so cron
   // dispatch shares the same box the WebPlugin fills on start.
 
-  // MCP Server is always active when a port is set — Claude Code provider depends on it for tools.
-  // Lives at top-level config (not under connectors:) because it exports
-  // ToolCenter outward rather than consuming chat input.
-  if (config.mcp.port) {
+  const envMcpEnabled = process.env['OPENALICE_MCP_ENABLED']
+  const mcpEnabled = envMcpEnabled === '1'
+    || ((envMcpEnabled === undefined || envMcpEnabled === '') && config.mcp.enabled === true)
+  const localCliOnWeb = process.env['OPENALICE_LOCAL_CLI_ON_WEB'] === '1'
+  const webTransport = process.env['OPENALICE_WEB_TRANSPORT'] === 'ipc' ? 'ipc' : 'http'
+  const toolBaseUrl = process.env['OPENALICE_TOOL_BASE_URL']
+    ?? (localCliOnWeb
+      ? `http://127.0.0.1:${config.connectors.web.port}/cli`
+      : `http://127.0.0.1:${config.mcp.port}/cli`)
+  const mcpBaseUrl = mcpEnabled ? `http://127.0.0.1:${config.mcp.port}/mcp` : undefined
+
+  // MCP is optional. The workspace CLI gateway is the default local tool path;
+  // when it cannot safely ride the loopback web listener, keep it on a
+  // loopback-only side listener.
+  if (mcpEnabled && config.mcp.port) {
     corePlugins.push(new McpPlugin(
       toolCenter,
       config.mcp.port,
@@ -315,12 +352,28 @@ async function main() {
       entityStore,
       () => workspaceServiceRef.current,
     ))
+  } else if (!localCliOnWeb && config.mcp.port) {
+    corePlugins.push(new LocalToolGatewayPlugin(config.mcp.port, {
+      toolCenter,
+      workspaceToolCenter,
+      inboxStore,
+      entityStore,
+      getWorkspaceService: () => workspaceServiceRef.current,
+    }))
   }
 
   // Web UI is always active (no enabled flag)
   if (config.connectors.web.port) {
     corePlugins.push(new WebPlugin(
-      { port: config.connectors.web.port, mcpPort: config.mcp.port },
+      {
+        port: config.connectors.web.port,
+        mcpPort: config.mcp.port,
+        toolBaseUrl,
+        ...(mcpBaseUrl ? { mcpBaseUrl } : {}),
+        localCliOnWeb,
+        listen: webTransport !== 'ipc',
+        ...(process.env['OPENALICE_TOOL_SOCKET'] ? { cliSocketPath: process.env['OPENALICE_TOOL_SOCKET'] } : {}),
+      },
       workspaceServiceRef,
     ))
   }
@@ -335,6 +388,7 @@ async function main() {
 
   const ctx: EngineContext = {
     config, inboxStore, entityStore, eventLog, toolCallLog, toolCenter,
+    workspaceToolCenter,
     listenerRegistry,
     fire: createEventBus(eventLog),
     bbEngine: getSDKExecutor(),
@@ -343,6 +397,7 @@ async function main() {
     barService,
     reference,
     utaManager,
+    tradingModePolicy: currentTradingModePolicy,
     newsProvider: newsStore,
   }
 

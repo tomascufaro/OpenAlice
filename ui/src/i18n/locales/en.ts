@@ -33,10 +33,12 @@ export const en = {
       system: 'System',
     },
     betaDescription:
-      "Functional but not yet dependable. Trading-as-Git and Portfolio surface cross-broker unified state whose underlying abstraction is still being settled — try them, but don't depend on schema or UX as stable yet. Automation runs, but its trigger chain isn't closed in the current Harness architecture, so it can't fire end-to-end until Harness scheduling lands. Broker connection setup lives in Settings → Trading.",
+      'Usable now; state model and UX may still change. Broker setup: Settings → Trading.',
     unread: '{{count}} unread',
     pendingPush: '{{count}} pending to push',
     about: 'About {{label}}',
+    collapseRail: 'Collapse activity bar',
+    expandRail: 'Expand activity bar',
   },
   settings: {
     title: 'Settings',
@@ -58,7 +60,9 @@ export const en = {
     category: {
       general: 'General',
       aiProvider: 'AI Provider',
+      agentPermissions: 'Agent Permissions',
       trading: 'Trading',
+      issues: 'Issues',
       mcpServer: 'MCP Server',
       marketData: 'Market Data',
       newsSources: 'News Sources',
@@ -73,6 +77,33 @@ export const en = {
       allowAiTradingConfirmTitle: 'Enable AI auto-trading?',
       allowAiTradingConfirmBody: 'This lets the AI send live orders to your broker without asking you each time. The UTA trading interface is still unstable and may have precision or parameter issues. Strongly discouraged on real-money accounts — use a paper / demo account.',
       allowAiTradingConfirmCta: 'Enable auto-trading',
+    },
+    agentPermissions: {
+      title: 'Agent Permissions',
+      mode: {
+        title: 'Trading mode',
+        description: 'Global broker capability for Alice and workspace agents.',
+        lite: {
+          label: 'Lite',
+          description: 'UTA stays disconnected. Alice can analyze without broker accounts.',
+        },
+        readonly: {
+          label: 'Readonly',
+          description: 'UTA can read accounts and positions. Broker writes are blocked.',
+        },
+        pro: {
+          label: 'Pro',
+          description: 'UTA is enabled. Per-account permissions and approval controls apply.',
+        },
+        saving: 'Switching',
+        envLocked: 'This install is locked by environment variables.',
+        source: 'Current source: {{source}}',
+      },
+      aiPush: {
+        title: 'AI trade push',
+        description: 'Whether agents may execute committed broker writes without manual approval.',
+        proOnly: 'Current trading mode still blocks broker writes. This switch only takes effect for execution in Pro mode.',
+      },
     },
     persona: {
       title: 'Persona',
@@ -147,8 +178,8 @@ export const en = {
     agentMissing: "{{name}} isn't installed on this machine.",
     installLabel: 'Install',
     installDocs: 'setup docs',
-    noAgentsTitle: 'No agent runtime detected',
-    noAgentsBody: 'Install a coding-agent CLI (e.g. Claude Code) on this machine to start chatting with Alice.',
+    noAgentsTitle: 'Managed runtime not detected',
+    noAgentsBody: 'OpenAlice normally includes Pi for workspace chat. If this appears in a packaged build, the runtime bundle needs attention; you can continue in Lite while setup is checked.',
     selectCredential: 'AI provider',
     configureProvider: 'Configure an AI provider',
     noCredBody: '{{name}} has no AI provider configured. Add one to start chatting.',

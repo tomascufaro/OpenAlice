@@ -37,7 +37,7 @@ export const configApi = {
     return res.json()
   },
 
-  async addCredential(input: { vendor: string; label?: string; wires: Partial<Record<WireShape, string>>; apiKey: string }): Promise<{ slug: string; vendor: string }> {
+  async addCredential(input: { vendor: string; label?: string; wires: Partial<Record<WireShape, string>>; apiKey: string; lastModel?: string }): Promise<{ slug: string; vendor: string }> {
     const res = await fetch('/api/config/credentials', { method: 'POST', headers, body: JSON.stringify(input) })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to add credential' }))
@@ -46,7 +46,7 @@ export const configApi = {
     return res.json()
   },
 
-  async updateCredential(slug: string, input: { vendor: string; label?: string; wires: Partial<Record<WireShape, string>>; apiKey?: string }): Promise<void> {
+  async updateCredential(slug: string, input: { vendor: string; label?: string; wires: Partial<Record<WireShape, string>>; apiKey?: string; lastModel?: string }): Promise<void> {
     const res = await fetch(`/api/config/credentials/${encodeURIComponent(slug)}`, { method: 'PUT', headers, body: JSON.stringify(input) })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to update credential' }))
@@ -121,4 +121,6 @@ export interface CredentialSummary {
   /** The stored key (admin-gated; lets the edit form round-trip it). */
   apiKey: string | null
   hasApiKey: boolean
+  /** Last model successfully used with this key, reused by quick-chat injection. */
+  lastModel?: string
 }

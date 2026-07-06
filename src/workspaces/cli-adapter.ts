@@ -76,6 +76,12 @@ export interface WorkspaceAiCred {
    * actually uses the shape the credential was created + tested with.
    */
   wireShape?: WireShape | null;
+  /**
+   * Model context window for runtimes that need an explicit custom-model limit
+   * (currently opencode/Pi). Optional so old workspace configs keep loading;
+   * injectors may choose a modern default for newly-written configs.
+   */
+  contextWindow?: number | null;
   /** Codex only — legacy/explicit wire_api; superseded by wireShape when set. */
   wireApi?: 'chat' | 'responses' | null;
   /** Claude only. */
@@ -164,10 +170,12 @@ export interface CliAdapter {
    * the process consumes `prompt` and EXITS at the turn boundary (vs the
    * interactive TUI that waits for input). The adapter places `prompt` at the
    * CLI-correct position (claude right after `-p`; codex/opencode/pi trailing).
-   * MUST keep the SAME MCP injection as `composeCommand` so the agent can reach
-   * `inbox_push`. Present iff `capabilities.headless` is true.
+   * MUST keep the same tool-access strategy as `composeCommand`: modern
+   * OpenAlice workspaces prefer the injected `alice*` / `traderhub` CLI shims,
+   * while adapter-native MCP is optional and adapter-specific. Present iff
+   * `capabilities.headless` is true.
    *   claude:   [...base, -p, <prompt>, --output-format, json]   // never --bare
-   *   codex:    [codex, -c mcp…, exec, --json, <prompt>]
+   *   codex:    [codex, exec, --json, <prompt>]                  // MCP optional
    *   opencode: [opencode, run, --format, json, <prompt>]
    *   pi:       [pi, -p, --mode, json, <prompt>]
    */

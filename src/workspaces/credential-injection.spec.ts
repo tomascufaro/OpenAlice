@@ -78,10 +78,16 @@ describe('credentialToWorkspaceAiCred', () => {
         expect(cred.wireShape).toBe('openai-chat')
         expect(cred.authMode).toBeUndefined()
         expect(cred.wireApi).toBeUndefined()
+        expect(cred.contextWindow).toBe(1_000_000)
         expect(cred.apiKey).toBe('k')
         expect(cred.baseUrl).toBe('https://gw.example.com/v1')
       })
     }
+  })
+
+  it('lets opencode/pi override the default context window', () => {
+    const cred = credentialToWorkspaceAiCred(chatOnlyGateway, 'pi', { model: 'some-model', contextWindow: 256_000 })!
+    expect(cred.contextWindow).toBe(256_000)
   })
 })
 
@@ -257,7 +263,7 @@ describe('resolveInjectionModel', () => {
   it('falls back to the vendor flagship when no lastModel', () => {
     expect(resolveInjectionModel({ vendor: 'anthropic' })).toBe('claude-opus-4-8')
     expect(resolveInjectionModel({ vendor: 'glm' })).toBe('glm-5.2')
-    expect(resolveInjectionModel({ vendor: 'longcat' })).toBe('longcat-2.0')
+    expect(resolveInjectionModel({ vendor: 'longcat' })).toBe('LongCat-2.0')
   })
 
   it('returns null for a vendor with no catalog default (custom)', () => {

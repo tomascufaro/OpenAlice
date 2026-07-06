@@ -848,6 +848,56 @@
   font-variant-numeric: tabular-nums;
 }
 
+.terminal-header-action {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--color-bg-secondary);
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 22px;
+}
+
+.terminal-header-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.terminal-theme-switch {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 2px;
+  gap: 1px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--color-bg-secondary);
+}
+
+.terminal-theme-option {
+  width: 22px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  color: var(--fg-dim);
+  background: transparent;
+  cursor: pointer;
+}
+
+.terminal-theme-option:hover {
+  color: var(--fg);
+  background: var(--color-overlay);
+}
+
+.terminal-theme-option.active {
+  color: var(--accent);
+  background: var(--color-overlay-strong);
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -872,4 +922,3 @@
 .terminal-host .xterm-viewport {
   background-color: transparent !important;
 }
-

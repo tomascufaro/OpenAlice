@@ -7,8 +7,9 @@ import type { Logger } from './logger.js';
 /**
  * Persistent session-identity record. Lives across server restart so the user
  * can pause a session today and resume it tomorrow. The `id` is the stable
- * uuid used in every cross-system reference (URL hash, WebSocket query, REST
- * route) — what we previously called `sessionToken` (transient, in-memory).
+ * launcher-owned record id used in every cross-system reference (URL hash,
+ * WebSocket query, REST route) — what we previously called `sessionToken`
+ * (transient, in-memory).
  *
  * `state` is the launcher's view: 'running' means we have a live PTY in the
  * pool keyed by this id; 'paused' means the record exists but no PTY. On a
@@ -47,7 +48,7 @@ interface FileShape {
   readonly records: SessionRecord[];
 }
 
-const SESSION_FILE_RE = /^[0-9a-f-]+\.json$/;
+const SESSION_FILE_RE = /^[A-Za-z0-9_-]+\.json$/;
 
 /**
  * Per-workspace persistent registry of SessionRecords. Each workspace gets
@@ -160,7 +161,7 @@ export class SessionRegistry {
     return this.byWs.get(wsId)?.get(id);
   }
 
-  /** Find a record by id without knowing its wsId (uniqueness assumed at uuid level). */
+  /** Find a record by id without knowing its wsId (record ids are global). */
   findById(id: string): SessionRecord | undefined {
     for (const records of this.byWs.values()) {
       const r = records.get(id);

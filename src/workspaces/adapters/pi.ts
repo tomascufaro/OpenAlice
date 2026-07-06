@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { runtimeProfileFromEnv } from '@/core/runtime-profile.js';
+
 import type { CliAdapter, SpawnContext, WorkspaceAiCred } from '../cli-adapter.js';
 import { readWorkspaceFile, writeWorkspaceFile } from '../file-service.js';
 
@@ -17,6 +19,17 @@ const PI_AGENT_DIR = '.pi-agent';
 const PI_MODELS_PATH = `${PI_AGENT_DIR}/models.json`;
 const PI_SETTINGS_PATH = `${PI_AGENT_DIR}/settings.json`;
 const PI_PROVIDER_NAME = 'workspace';
+
+function positiveNumber(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function piCommandHead(env: Readonly<Record<string, string>>): readonly string[] {
+  const profile = runtimeProfileFromEnv(env);
+  if (!profile.managedPiPath) return ['pi'];
+  if (profile.managedPiNodePath) return [profile.managedPiNodePath, profile.managedPiPath];
+  return [profile.managedPiPath];
+}
 
 /**
  * Pi (github.com/earendil-works/pi, by Mario Zechner; MIT). Open-source agent
@@ -71,7 +84,7 @@ export const piAdapter: CliAdapter = {
   composeCommand(_base: readonly string[], ctx: SpawnContext): readonly string[] {
     // Tools come from the CLI-injection path (alice on PATH + .pi/skills), not
     // flags — so the command head is just the binary + a resume flag (if any).
-    const head = ['pi'];
+    const head = piCommandHead(ctx.env);
     // Quick-chat seed: `pi [--session-id <id>] <messages…>` opens the
     // interactive TUI seeded with that first message. UNLIKE the other adapters,
     // pi appends the seed REGARDLESS of the resume branch: pi assigns its own id
@@ -95,7 +108,7 @@ export const piAdapter: CliAdapter = {
   // 0.78.1), so the prompt is a bare trailing positional — a prompt literally
   // starting with `-`/`--` is unprotected on pi (rare for task prompts).
   composeHeadlessCommand(_base: readonly string[], _ctx: SpawnContext, prompt: string): readonly string[] {
-    return ['pi', '-p', '--mode', 'json', prompt];
+    return [...piCommandHead(_ctx.env), '-p', '--mode', 'json', prompt];
   },
 
   // pi `--mode json` line 1 is `{"type":"session","id":…,"cwd":…}` — pi mints
@@ -148,9 +161,14 @@ export const piAdapter: CliAdapter = {
     // Key written directly into the workspace file (same trust model as codex's
     // .codex/env.json / opencode's opencode.json).
     if (cred.apiKey) provider['apiKey'] = cred.apiKey;
-    // ModelDefinitionSchema requires only `id` (model-registry.js:108-109);
-    // TypeBox Type.Object rejects unknown props, so keep it to `{ id }`.
-    if (cred.model) provider['models'] = [{ id: cred.model }];
+    // Pi's custom model registry otherwise falls back to 128k. OpenAlice writes
+    // the context window when known so long-context models do not compact early.
+    if (cred.model) {
+      const model: Record<string, unknown> = { id: cred.model };
+      const contextWindow = positiveNumber(cred.contextWindow);
+      if (contextWindow !== null) model['contextWindow'] = contextWindow;
+      provider['models'] = [model];
+    }
 
     await writeWorkspaceFile(
       cwd,
@@ -163,6 +181,8 @@ export const piAdapter: CliAdapter = {
     // (rm .pi-agent) tears both down together.
     const settings: Record<string, unknown> = { defaultProvider: PI_PROVIDER_NAME };
     if (cred.model) settings['defaultModel'] = cred.model;
+    const shellPath = runtimeProfileFromEnv().managedShellPath;
+    if (shellPath) settings['shellPath'] = shellPath;
     await writeWorkspaceFile(cwd, PI_SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n');
   },
 
@@ -182,12 +202,13 @@ export const piAdapter: CliAdapter = {
     const models = Array.isArray(p['models']) ? (p['models'] as Array<Record<string, unknown>>) : [];
     const first = models[0];
     const model = first && typeof first['id'] === 'string' ? (first['id'] as string) : null;
+    const contextWindow = first && positiveNumber(first['contextWindow'] as number | null | undefined);
     if (baseUrl === null && apiKey === null && model === null) return null;
     // Reverse the `api` field back to the wire shape.
     const api = p['api'];
     const wireShape = api === 'anthropic-messages' ? 'anthropic' as const
       : api === 'openai-responses' ? 'openai-responses' as const
       : 'openai-chat' as const;
-    return { baseUrl, apiKey, model, wireShape };
+    return { baseUrl, apiKey, model, wireShape, ...(contextWindow ? { contextWindow } : {}) };
   },
 };

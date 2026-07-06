@@ -73,6 +73,7 @@ export class UTAManager {
       guards: cfg.guards,
       keyless: cfg.keyless,
       readOnly: cfg.readOnly,
+      asVendor: cfg.asVendor,
       savedState,
       onCommit: createGitPersister(cfg.id),
       onHealthChange: (utaId, health) => {
@@ -168,6 +169,7 @@ export class UTAManager {
     return Array.from(this.entries.values()).map((uta) => ({
       id: uta.id,
       label: uta.label,
+      asVendor: uta.asVendor,
       capabilities: uta.getCapabilities(),
       health: uta.getHealthInfo(),
     }))
@@ -280,7 +282,7 @@ export class UTAManager {
   ): Promise<ContractSearchResult[]> {
     const targets = accountId
       ? [this.entries.get(accountId)].filter(Boolean) as UnifiedTradingAccount[]
-      : Array.from(this.entries.values())
+      : Array.from(this.entries.values()).filter((uta) => uta.asVendor !== false)
 
     const results = await Promise.all(
       targets.map(async (uta) => {

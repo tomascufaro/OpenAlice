@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 
 const OPENCODE_CONFIG_PATH = 'opencode.json';
 const OPENCODE_PROVIDER_NAME = 'workspace';
+const DEFAULT_OUTPUT_TOKENS = 16_384;
 // opencode's `@ai-sdk/openai-compatible` SDK is statically bundled into the
 // binary (no runtime `npm install`) and speaks `/v1/chat/completions` — the
 // right shape for OpenAI-compatible + Chinese gateways (DeepSeek/Qwen/Kimi/
@@ -17,6 +18,10 @@ const OPENCODE_PROVIDER_NAME = 'workspace';
 // overrides always use this SDK; an Anthropic-shape override would swap to
 // `@ai-sdk/anthropic` (also bundled) — deferred until there's a real case.
 const OPENCODE_SDK_NPM = '@ai-sdk/openai-compatible';
+
+function positiveNumber(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
 
 /**
  * opencode (github.com/anomalyco/opencode, formerly sst/opencode; MIT, by
@@ -26,18 +31,13 @@ const OPENCODE_SDK_NPM = '@ai-sdk/openai-compatible';
  * that codex's Responses-only lock can't touch.
  *
  * Contract VERIFIED against opencode 1.16.0 on macOS (`opencode --help` +
- * an `opencode debug config` injection smoke, 2026-06):
+ * an `opencode debug config` provider-config smoke, 2026-06):
  *
- *   - MCP injection: opencode reads config from many layers; the strongest
- *     knob a launcher controls is `OPENCODE_CONFIG_CONTENT` (inline JSON in
- *     env, precedence below only MDM-managed config, deep-MERGED with the
- *     workspace's own `opencode.json`). We inject OpenAlice's two MCP servers
- *     there in `composeEnv` — the `mcp` block merges in without clobbering the
- *     `provider` block written to `opencode.json`. This is the cleaner analogue
- *     of codex's per-spawn `-c mcp_servers...` flags. Verified via
- *     `opencode debug config`: the file's `provider` and the env's `mcp` block
- *     both land in the resolved config (disjoint top-level keys; remeda
- *     mergeDeep), and `$schema` passes opencode's strict top-level-key check.
+ *   - Tool access: OpenAlice tools are exposed through the injected
+ *     `alice*` / `traderhub` CLI shims, not opencode's native MCP config.
+ *     We intentionally do not set `OPENCODE_CONFIG_CONTENT`: leaving opencode's
+ *     native config surface alone avoids hidden app-mode ports and keeps the
+ *     workspace tooling path identical to pi/shell/headless CLI usage.
  *
  *   - Provider override: `opencode.json` `provider.<name>` with a custom
  *     `baseURL` + `apiKey` + a top-level default `model = "<provider>/<id>"`.
@@ -86,9 +86,9 @@ export const opencodeAdapter: CliAdapter = {
   },
 
   composeCommand(_base: readonly string[], ctx: SpawnContext): readonly string[] {
-    // MCP is injected via OPENCODE_CONFIG_CONTENT (composeEnv), not flags, so
-    // the command head is just the binary + a resume flag (if any). Resume is a
-    // top-level flag on the bare TUI — verified against opencode 1.16.0.
+    // Tool access is via the injected CLI shims, so the command head is just
+    // the binary + a resume flag (if any). Resume is a top-level flag on the
+    // bare TUI — verified against opencode 1.16.0.
     const head = ['opencode'];
     if (ctx.resume === undefined) {
       // Quick-chat seed: `opencode --prompt <text>` opens the TUI seeded with
@@ -103,10 +103,9 @@ export const opencodeAdapter: CliAdapter = {
   },
 
   // Headless: `opencode run <prompt>` is non-interactive and exits at the turn
-  // boundary. MCP rides OPENCODE_CONFIG_CONTENT (composeEnv, same as
-  // interactive) so the agent reaches inbox_push; prompt is the trailing
-  // positional after a `--` end-of-options terminator (so a `-`-leading prompt
-  // isn't read as a flag).
+  // boundary. Tool access is via the injected CLI shims and bundled skills;
+  // prompt is the trailing positional after a `--` end-of-options terminator
+  // (so a `-`-leading prompt isn't read as a flag).
   composeHeadlessCommand(_base: readonly string[], _ctx: SpawnContext, prompt: string): readonly string[] {
     return ['opencode', 'run', '--format', 'json', '--', prompt];
   },
@@ -130,49 +129,6 @@ export const opencodeAdapter: CliAdapter = {
       OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
     };
 
-    // Inject OpenAlice's MCP servers per-spawn via inline config. Read from the
-    // spawn-bound env (service.ts populates the real MCP port per spawn), NOT
-    // process.env — mirrors codexAdapter.composeCommand. Fail loud if missing:
-    // a workspace silently spawned without trading context is worse than a hard
-    // error (matches the codebase's loud-failure stance).
-    const mcpUrl = ctx.env['OPENALICE_MCP_URL'];
-    if (!mcpUrl) {
-      throw new Error('opencode adapter: OPENALICE_MCP_URL missing from spawn env');
-    }
-    const workspaceId = ctx.env['AQ_WS_ID'];
-    if (!workspaceId) {
-      throw new Error('opencode adapter: AQ_WS_ID missing from spawn env');
-    }
-    // Agent-INVISIBLE origin identity: a spawn carries AQ_RUN_ID XOR
-    // AQ_SESSION_ID — a HEADLESS spawn injects AQ_RUN_ID (the run's taskId),
-    // an INTERACTIVE spawn injects AQ_SESSION_ID (the pre-allocated
-    // SessionRegistry record id); a probe carries neither. opencode's
-    // remote-MCP config supports a static `headers` map, so we stamp the id
-    // onto the workspace server entry — the server then resolves the entry's
-    // origin from it. This is the native-MCP twin of the `alice` CLI shim's
-    // header forwarding: spawn-time server config, NOT a tool argument, so the
-    // agent never sees or supplies it. Only on `openalice-workspace` (the
-    // scoped surface that owns inbox_push); the global `openalice` server has no
-    // per-spawn identity. Mutually exclusive headers, matching the shim.
-    const runId = ctx.env['AQ_RUN_ID'];
-    const sessionId = ctx.env['AQ_SESSION_ID'];
-    const wsServer: Record<string, unknown> = {
-      type: 'remote',
-      url: `${mcpUrl}/${workspaceId}`,
-      enabled: true,
-      ...(runId
-        ? { headers: { 'x-openalice-run': runId } }
-        : sessionId
-          ? { headers: { 'x-openalice-session': sessionId } }
-          : {}),
-    };
-    const inline = {
-      mcp: {
-        openalice: { type: 'remote', url: mcpUrl, enabled: true },
-        'openalice-workspace': wsServer,
-      },
-    };
-    env['OPENCODE_CONFIG_CONTENT'] = JSON.stringify(inline);
     return env;
   },
 
@@ -202,7 +158,15 @@ export const opencodeAdapter: CliAdapter = {
       options,
     };
     if (cred.model) {
-      provider['models'] = { [cred.model]: { name: cred.model } };
+      const model: Record<string, unknown> = { name: cred.model };
+      const contextWindow = positiveNumber(cred.contextWindow);
+      if (contextWindow !== null) {
+        // opencode treats missing custom-model limits as 0, which disables its
+        // proactive context tracking. Supplying both fields satisfies its config
+        // schema while keeping output conservative and invisible in OpenAlice UI.
+        model['limit'] = { context: contextWindow, output: DEFAULT_OUTPUT_TOKENS };
+      }
+      provider['models'] = { [cred.model]: model };
     }
 
     const config: Record<string, unknown> = {
@@ -237,13 +201,17 @@ export const opencodeAdapter: CliAdapter = {
       const slash = top.indexOf('/');
       model = slash >= 0 ? top.slice(slash + 1) : top;
     }
+    const models = (ws['models'] ?? {}) as Record<string, Record<string, unknown>>;
+    const modelConfig = model ? models[model] : undefined;
+    const limit = (modelConfig?.['limit'] ?? {}) as Record<string, unknown>;
+    const contextWindow = positiveNumber(limit['context'] as number | null | undefined);
     if (baseUrl === null && apiKey === null && model === null) return null;
     // Reverse the npm package back to the wire shape.
     const npm = typeof ws['npm'] === 'string' ? (ws['npm'] as string) : '';
     const wireShape = npm === '@ai-sdk/anthropic' ? 'anthropic' as const
       : npm === '@ai-sdk/openai' ? 'openai-responses' as const
       : 'openai-chat' as const;
-    return { baseUrl, apiKey, model, wireShape };
+    return { baseUrl, apiKey, model, wireShape, ...(contextWindow ? { contextWindow } : {}) };
   },
 
   /**

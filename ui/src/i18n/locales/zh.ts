@@ -22,10 +22,12 @@ export const zh: Resources = {
       system: '系统',
     },
     betaDescription:
-      '功能可用，但尚不稳定。Trading-as-Git 与投资组合展示的是跨券商的统一状态，其底层抽象仍在定型中——可以试用，但不要依赖其 schema 或 UX 的稳定性。自动化能运行，但在当前 Harness 架构下其触发链尚未闭合，因此在 Harness 调度落地前无法端到端触发。券商连接设置位于 设置 → 交易。',
+      '已可用，但状态模型和 UX 仍可能变化。券商连接在 设置 → 交易。',
     unread: '{{count}} 条未读',
     pendingPush: '{{count}} 笔待推送',
     about: '关于{{label}}',
+    collapseRail: '折叠活动栏',
+    expandRail: '展开活动栏',
   },
   settings: {
     title: '设置',
@@ -47,7 +49,9 @@ export const zh: Resources = {
     category: {
       general: '通用',
       aiProvider: 'AI 提供商',
+      agentPermissions: '智能体权限',
       trading: '交易',
+      issues: 'Issues',
       mcpServer: 'MCP 服务器',
       marketData: '市场数据',
       newsSources: '新闻源',
@@ -62,6 +66,33 @@ export const zh: Resources = {
       allowAiTradingConfirmTitle: '开启 AI 自动交易？',
       allowAiTradingConfirmBody: '开启后，AI 可在不征求你同意的情况下向券商发送真实订单。UTA 交易接口目前仍不稳定，可能存在精度或参数问题。强烈不建议在实盘账户上使用——请使用模拟 / demo 账户。',
       allowAiTradingConfirmCta: '开启自动交易',
+    },
+    agentPermissions: {
+      title: '智能体权限',
+      mode: {
+        title: '交易模式',
+        description: 'Alice 和工作区智能体的全局券商能力。',
+        lite: {
+          label: 'Lite',
+          description: 'UTA 保持断开。Alice 只做分析，不读取券商账户。',
+        },
+        readonly: {
+          label: 'Readonly',
+          description: 'UTA 可读取账户和持仓，但禁止写入券商状态。',
+        },
+        pro: {
+          label: 'Pro',
+          description: 'UTA 开启，并应用每个账户自己的权限和审批控制。',
+        },
+        saving: '切换中',
+        envLocked: '当前安装被环境变量锁定，不能从界面切换。',
+        source: '当前来源：{{source}}',
+      },
+      aiPush: {
+        title: 'AI 交易推送',
+        description: '控制智能体是否可以绕过人工审批，直接执行已 commit 的券商写入。',
+        proOnly: '当前交易模式仍会阻止券商写入。这个开关只有在 Pro 模式执行时才会真正生效。',
+      },
     },
     persona: {
       title: '人设',
@@ -136,8 +167,8 @@ export const zh: Resources = {
     agentMissing: '本机未安装 {{name}}。',
     installLabel: '安装',
     installDocs: '安装文档',
-    noAgentsTitle: '未检测到智能体运行时',
-    noAgentsBody: '请在本机安装一个编码智能体 CLI（例如 Claude Code），才能开始与 Alice 对话。',
+    noAgentsTitle: '未检测到托管运行时',
+    noAgentsBody: 'OpenAlice 通常会自带 Pi 用于工作区对话。如果打包版出现这个提示，说明运行时包需要检查；你仍然可以先以 Lite 模式继续使用。',
     selectCredential: 'AI 提供方',
     configureProvider: '配置一个 AI 提供方',
     noCredBody: '{{name}} 还没有配置 AI 提供方，先添加一个才能开始对话。',
