@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Decimal from 'decimal.js'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Contract, Order, coerceSecType } from '@traderalice/ibkr'
 import { SimBroker } from './SimBroker.js'
 import { SimLedger } from './SimLedger.js'
 import type { QuoteFetcher } from './sim-types.js'
+import type { FxService } from '../../fx-service.js'
 
 let tempDir: string
 
@@ -28,6 +29,13 @@ function makeContract(symbol = 'AAPL'): Contract {
   return c
 }
 
+function makeCurrencyContract(symbol: string, currency: string): Contract {
+  const c = makeContract(symbol)
+  c.currency = currency
+  c.aliceId = `sim|${symbol}`
+  return c
+}
+
 function makeOrder(action: 'BUY' | 'SELL', orderType: string, qty: number, price?: number): Order {
   const o = new Order()
   o.action = action
@@ -45,6 +53,7 @@ function makeBroker(opts: {
   commissionPerTrade?: number
   quoteFetcher?: QuoteFetcher
   ledgerPath?: string
+  currency?: string
 } = {}): SimBroker {
   return SimBroker.fromConfig(
     {
@@ -52,7 +61,7 @@ function makeBroker(opts: {
       label: 'Test Sim',
       brokerConfig: {
         initialCash: opts.initialCash ?? 100_000,
-        currency: 'USD',
+        currency: opts.currency ?? 'USD',
         slippageBps: opts.slippageBps ?? 0,
         commissionPerTrade: opts.commissionPerTrade ?? 0,
       },
@@ -105,6 +114,35 @@ describe('SimBroker persistent paper account', () => {
 
     const result = await second.placeOrder(makeContract('MSFT'), makeOrder('BUY', 'MKT', 1))
     expect(result.orderId).toBe('sim-ord-2')
+  })
+
+  it('does not overwrite an externally imported ledger on close', async () => {
+    const ledgerPath = join(tempDir, 'external-import-ledger.json')
+    const broker = makeBroker({ ledgerPath })
+    await broker.init()
+    const imported = {
+      accountId: 'test-sim',
+      cash: '0',
+      currency: 'USD',
+      positions: [{
+        aliceId: 'test-sim|ACGL',
+        symbol: 'ACGL',
+        secType: 'STK',
+        exchange: 'SMART',
+        currency: 'USD',
+        side: 'long',
+        quantity: '4',
+        avgCost: '95.12',
+      }],
+      orders: [],
+      realizedPnL: '0',
+      nextOrderId: 1,
+    }
+    await writeFile(ledgerPath, JSON.stringify(imported, null, 2))
+
+    await broker.close()
+
+    expect(JSON.parse(await readFile(ledgerPath, 'utf8'))).toEqual(imported)
   })
 
   it('rejects buys that would overdraw cash', async () => {
@@ -160,5 +198,24 @@ describe('SimBroker persistent paper account', () => {
 
     expect(result.filledPrice).toBe('101')
     expect((await broker.getAccount()).totalCashValue).toBe('99894.00')
+  })
+
+  it('converts foreign-currency positions and fills into account base currency', async () => {
+    const fx = {
+      convert: async (amount: string, from: string, to: string) => {
+        const usd = from === 'USD' ? new Decimal(amount) : new Decimal(amount).mul(2)
+        return { amount: to === 'USD' ? usd.toString() : usd.div(2).toString() }
+      },
+    }
+    const broker = makeBroker({ initialCash: 1000, currency: 'EUR', quoteFetcher: async () => 50 })
+    broker.setFxService(fx as unknown as FxService)
+    await broker.init()
+
+    await broker.placeOrder(makeCurrencyContract('AAPL', 'USD'), makeOrder('BUY', 'MKT', 2))
+
+    const account = await broker.getAccount()
+    expect(account.baseCurrency).toBe('EUR')
+    expect(account.totalCashValue).toBe('950.00')
+    expect(account.netLiquidation).toBe('1000.00')
   })
 })

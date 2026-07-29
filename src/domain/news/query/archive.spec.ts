@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { globRss, grepRss, readRss, windowRss, type NewsToolContext } from './archive'
+import { globRss, grepRss, readRss, redditSignals, windowRss, type NewsToolContext } from './archive'
 import type { NewsItem } from '../types'
 
 describe('news tools (pure functions)', () => {
@@ -310,6 +310,54 @@ describe('news tools (pure functions)', () => {
       const out = await windowRss(createContext(), { pattern: 'Bitcoin' })
       expect(out.map((r) => r.id)).toEqual([10, 30]) // both mention Bitcoin, oldest-first
       expect(out[0].matchedText).toMatch(/Bitcoin/)
+    })
+  })
+
+  describe('redditSignals', () => {
+    const redditNews: NewsItem[] = [
+      {
+        id: 101,
+        time: new Date('2025-01-03T10:00:00Z'),
+        title: 'Congress disclosure mentions $NVDA after AI contract news',
+        content: 'New filing chatter says NVDA appeared in a congressional disclosure.',
+        metadata: { source: 'reddit-tradewithcongress', link: 'https://reddit.com/r/tradewithcongress/x', categories: 'reddit,signals,congress' },
+      },
+      {
+        id: 102,
+        time: new Date('2025-01-03T11:00:00Z'),
+        title: 'Long-form ASML valuation DD',
+        content: 'Security analysis post about ASML margins and guidance.',
+        metadata: { source: 'reddit-securityanalysis', link: 'https://reddit.com/r/SecurityAnalysis/y', categories: 'reddit,signals,fundamental' },
+      },
+      {
+        id: 103,
+        time: new Date('2025-01-03T12:00:00Z'),
+        title: 'Fed minutes recap',
+        content: 'No Reddit source here.',
+        metadata: { source: 'official', link: 'https://example.com', categories: 'macro' },
+      },
+    ]
+
+    it('returns public Reddit signal leads with detected tickers', async () => {
+      const results = await redditSignals(createContext(redditNews), {})
+
+      expect(results.map((r) => r.id)).toEqual([101, 102])
+      expect(results[0]).toMatchObject({
+        subreddit: 'tradewithcongress',
+        tickers: ['NVDA'],
+        source: 'public_reddit',
+        verificationRequired: true,
+      })
+    })
+
+    it('filters by ticker and subreddit', async () => {
+      const results = await redditSignals(createContext(redditNews), {
+        tickers: ['ASML'],
+        subreddits: ['SecurityAnalysis'],
+      })
+
+      expect(results).toHaveLength(1)
+      expect(results[0].id).toBe(102)
     })
   })
 })

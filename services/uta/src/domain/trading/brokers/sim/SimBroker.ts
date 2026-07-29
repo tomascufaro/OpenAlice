@@ -28,6 +28,7 @@ import type {
 } from './sim-types.js'
 import { SimLedger } from './SimLedger.js'
 import '../../contract-ext.js'
+import type { FxService } from '../../fx-service.js'
 
 interface InternalPosition {
   contract: Contract
@@ -90,6 +91,7 @@ export class SimBroker implements IBroker {
   private _orders = new Map<string, InternalOrder>()
   private _nextOrderId = 1
   private readonly _ledger: SimLedger
+  private _fxService?: FxService
 
   constructor(
     id: string,
@@ -102,6 +104,10 @@ export class SimBroker implements IBroker {
     this.label = label
     this._cash = new Decimal(_config.initialCash)
     this._ledger = ledger ?? new SimLedger(id)
+  }
+
+  setFxService(fx: FxService): void {
+    this._fxService = fx
   }
 
   async init(): Promise<void> {
@@ -141,7 +147,7 @@ export class SimBroker implements IBroker {
   }
 
   async close(): Promise<void> {
-    await this._saveLedger()
+    // Mutations save immediately; close must not overwrite a ledger imported while UTA was running.
   }
 
   async searchContracts(pattern: string): Promise<ContractDescription[]> {
@@ -182,7 +188,7 @@ export class SimBroker implements IBroker {
 
       const cloned = this._cloneOrder(order, orderId)
       this._orders.set(orderId, { id: orderId, contract, order: cloned, status: 'Submitted' })
-      const error = this._applyFill(contract, action, qty, fillPrice, orderId)
+      const error = await this._applyFill(contract, action, qty, fillPrice, orderId)
       if (error) {
         this._orders.delete(orderId)
         return { success: false, error }
@@ -261,8 +267,10 @@ export class SimBroker implements IBroker {
       const price = await this._safePrice(pos.contract, pos.avgCost)
       const multiplier = this._multiplier(pos.contract)
       const posValue = pos.quantity.mul(price).mul(multiplier)
-      marketValue = marketValue.plus(posValue)
-      unrealizedPnL = unrealizedPnL.plus(pos.quantity.mul(price.minus(pos.avgCost)).mul(multiplier))
+      const pnl = pos.quantity.mul(price.minus(pos.avgCost)).mul(multiplier)
+      const currency = pos.contract.currency || this._config.currency
+      marketValue = marketValue.plus(await this._toBase(posValue, currency))
+      unrealizedPnL = unrealizedPnL.plus(await this._toBase(pnl, currency))
     }
 
     return {
@@ -372,7 +380,7 @@ export class SimBroker implements IBroker {
       const fillAt = this._crossedPrice(type, action, price, internal.order)
       if (!fillAt) continue
 
-      const error = this._applyFill(internal.contract, action, qty, fillAt, internal.id)
+      const error = await this._applyFill(internal.contract, action, qty, fillAt, internal.id)
       if (!error) changed = true
     }
 
@@ -400,17 +408,17 @@ export class SimBroker implements IBroker {
     return null
   }
 
-  private _applyFill(
+  private async _applyFill(
     contract: Contract,
     action: 'BUY' | 'SELL',
     qty: Decimal,
     fillPrice: Decimal,
     orderId: string,
-  ): string | null {
+  ): Promise<string | null> {
     const key = this.getNativeKey(contract)
     const multiplier = this._multiplier(contract)
     const commission = new Decimal(this._config.commissionPerTrade)
-    const tradeValue = qty.mul(fillPrice).mul(multiplier)
+    const tradeValue = await this._toBase(qty.mul(fillPrice).mul(multiplier), contract.currency || this._config.currency)
     const existing = this._positions.get(key)
 
     if (action === 'BUY') {
@@ -437,7 +445,7 @@ export class SimBroker implements IBroker {
         existing.avgCost = totalCost.div(existing.quantity)
       }
     } else if (existing) {
-      const pnl = fillPrice.minus(existing.avgCost).mul(qty).mul(multiplier)
+      const pnl = await this._toBase(fillPrice.minus(existing.avgCost).mul(qty).mul(multiplier), contract.currency || this._config.currency)
       this._realizedPnL = this._realizedPnL.plus(pnl)
       const remaining = existing.quantity.minus(qty)
       if (remaining.lte(0)) this._positions.delete(key)
@@ -540,6 +548,12 @@ export class SimBroker implements IBroker {
 
   private _multiplier(contract: Contract): Decimal {
     return new Decimal(contract.multiplier || '1')
+  }
+
+  private async _toBase(amount: Decimal, currency: string): Promise<Decimal> {
+    if (!this._fxService || currency.toUpperCase() === this._config.currency.toUpperCase()) return amount
+    const converted = await this._fxService.convert(amount.toString(), currency, this._config.currency)
+    return new Decimal(converted.amount)
   }
 
   private _contractFromSim(p: { aliceId: string; symbol: string; secType: string; exchange: string; currency: string }): Contract {

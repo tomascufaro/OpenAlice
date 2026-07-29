@@ -19,6 +19,7 @@
     "electron:smoke:packaged": "node scripts/desktop-packaged-smoke.mjs",
     "electron:smoke:pty": "node scripts/desktop-pty-smoke.mjs",
     "vendor:runtime": "node scripts/vendor-managed-runtime.mjs",
+    "import:ghostfolio": "tsx scripts/import-ghostfolio-sim.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",

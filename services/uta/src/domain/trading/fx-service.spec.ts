@@ -165,6 +165,19 @@ describe('FxService', () => {
     expect(result.fxWarning).toBeUndefined()
   })
 
+  it('converts between non-USD currencies through USD', async () => {
+    client = makeMockClient()
+    client.getSnapshots = vi.fn(async ({ base }: { base: string }) => [
+      { base_currency: base, counter_currency: 'USD', last_rate: base === 'DKK' ? 0.15 : 1.2 },
+    ])
+    const fx = new FxService(client)
+
+    const result = await fx.convert('120', 'DKK', 'EUR')
+
+    expect(result.amount).toBe('15')
+    expect(result.fxWarning).toBeUndefined()
+  })
+
   // ==================== Case insensitivity ====================
 
   it('normalizes currency codes to uppercase', async () => {

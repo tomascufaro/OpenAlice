@@ -323,6 +323,10 @@ function codexMcpHead(ctx: SpawnContext): string[] {
   return [
     'codex',
     '-c',
+    // Let agent-run `alice*` shell commands reach OpenAlice's loopback CLI
+    // gateway from Codex's workspace-write sandbox.
+    'sandbox_workspace_write.network_access=true',
+    '-c',
     `mcp_servers.openalice.url="${mcpUrl}"`,
     '-c',
     // `openalice-workspace` is a valid TOML bare key (hyphen is allowed in bare

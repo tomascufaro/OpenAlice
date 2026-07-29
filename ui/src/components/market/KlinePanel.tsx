@@ -179,7 +179,7 @@ export function KlinePanel({ selection }: Props) {
       setError(null)
       const days = daysForTimeframe(tf)
       const params: Parameters<typeof barsApi.bars>[0] = { interval }
-      if (selectedBarId) params.barId = selectedBarId
+      if (selectedBarId) { params.barId = selectedBarId; params.assetClass = selection.assetClass }
       else { params.symbol = selection.symbol; params.assetClass = selection.assetClass }
       if (days != null) params.start = startDateFromToday(days)
 

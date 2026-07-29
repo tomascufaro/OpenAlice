@@ -39,6 +39,13 @@ export interface ConvertResult {
   fxWarning?: string
 }
 
+export interface ConvertCurrencyResult {
+  /** Amount converted to the requested currency (string to prevent IEEE 754 artifacts). */
+  amount: string
+  /** Present only when a default (hardcoded) rate was used. Includes the updatedAt date. */
+  fxWarning?: string
+}
+
 // ==================== Default rate table ====================
 
 /**
@@ -217,5 +224,20 @@ export class FxService {
       return { usd, fxWarning: `${currency}: using default rate ${fx.rate} (last updated ${fx.updatedAt})` }
     }
     return { usd }
+  }
+
+  async convert(amount: string, from: string, to: string): Promise<ConvertCurrencyResult> {
+    const d = new Decimal(amount)
+    const fromKey = from.toUpperCase()
+    const toKey = to.toUpperCase()
+    if (d.isZero() || fromKey === toKey) return { amount: d.toString() }
+
+    const [fromUsd, toUsd] = await Promise.all([
+      this.convertToUsd('1', fromKey),
+      this.convertToUsd('1', toKey),
+    ])
+    const converted = d.mul(fromUsd.usd).div(toUsd.usd).toString()
+    const warnings = [fromUsd.fxWarning, toUsd.fxWarning].filter(Boolean)
+    return { amount: converted, fxWarning: warnings.join('; ') || undefined }
   }
 }

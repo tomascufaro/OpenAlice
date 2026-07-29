@@ -14,6 +14,25 @@ const NEWS_LIMIT = 500
  *  bound what's returned and report how many were omitted, rather than wall the
  *  caller's context. */
 const WINDOW_DEFAULT_LIMIT = 40
+const REDDIT_SIGNAL_LIMIT = 40
+
+const REDDIT_SIGNAL_SOURCES: Record<string, string> = {
+  'reddit-tradewithcongress': 'tradewithcongress',
+  'reddit-congressstocktrading': 'CongressStockTrading',
+  'reddit-securityanalysis': 'SecurityAnalysis',
+  'reddit-valueinvesting': 'ValueInvesting',
+  'reddit-stocks': 'stocks',
+  'reddit-investing': 'investing',
+  'reddit-options': 'options',
+  'reddit-thetagang': 'thetagang',
+  'reddit-algotrading': 'algotrading',
+}
+
+const TICKER_STOPWORDS = new Set([
+  'A', 'AI', 'API', 'ATH', 'CEO', 'CFO', 'CPI', 'DD', 'DIY', 'DTE', 'EPS', 'ETF',
+  'FDA', 'FOMC', 'GDP', 'IPO', 'IRA', 'IRS', 'ITM', 'IV', 'MACD', 'NAV', 'OTC',
+  'OTM', 'PCE', 'PE', 'SEC', 'SPAC', 'TA', 'THE', 'US', 'USA', 'USD', 'YOLO',
+])
 
 // ==================== Pure functions (testable) ====================
 
@@ -48,6 +67,19 @@ export interface WindowRssResult {
   /** Present only when a pattern was given (the matched snippet). */
   matchedText?: string
   metadata: string
+}
+
+export interface RedditSignalResult {
+  id: number
+  time: string
+  subreddit: string
+  title: string
+  url: string | null
+  tickers: string[]
+  score: number
+  reason: string
+  source: 'public_reddit'
+  verificationRequired: true
 }
 
 function truncateMetadata(metadata: Record<string, string | null>, maxLength: number = 40): string {
@@ -187,6 +219,84 @@ export async function readRss(
   return news.find((item) => item.id === options.id) ?? null
 }
 
+export async function redditSignals(
+  context: NewsToolContext,
+  options: {
+    tickers?: string[]
+    subreddits?: string[]
+    pattern?: string
+    limit?: number
+  } = {},
+): Promise<RedditSignalResult[]> {
+  const news = await context.getNews()
+  const tickerFilter = new Set((options.tickers ?? []).map((t) => t.replace(/^\$/, '').toUpperCase()))
+  const subredditFilter = new Set((options.subreddits ?? []).map((s) => s.replace(/^r\//i, '').toLowerCase()))
+  const pattern = options.pattern ? new RegExp(options.pattern, 'i') : null
+  const out: RedditSignalResult[] = []
+
+  for (const item of news) {
+    const source = item.metadata.source ?? ''
+    const subreddit = REDDIT_SIGNAL_SOURCES[source]
+    if (!subreddit) continue
+    if (subredditFilter.size > 0 && !subredditFilter.has(subreddit.toLowerCase())) continue
+
+    const text = `${item.title}\n${item.content}`
+    if (pattern && !pattern.test(text)) continue
+
+    const tickers = detectTickers(text)
+    if (tickerFilter.size > 0 && !tickers.some((t) => tickerFilter.has(t))) continue
+
+    out.push({
+      id: item.id,
+      time: new Date(item.time).toISOString(),
+      subreddit,
+      title: item.title,
+      url: item.metadata.link ?? null,
+      tickers,
+      score: scoreRedditSignal({ item, subreddit, tickers, patternMatched: Boolean(pattern) }),
+      reason: reasonForRedditSignal(subreddit, tickers),
+      source: 'public_reddit',
+      verificationRequired: true,
+    })
+  }
+
+  return out
+    .sort((a, b) => b.score - a.score || b.time.localeCompare(a.time))
+    .slice(0, options.limit ?? REDDIT_SIGNAL_LIMIT)
+}
+
+function detectTickers(text: string): string[] {
+  const found = new Set<string>()
+  for (const match of text.matchAll(/\$([A-Z]{1,5})(?![A-Z])/g)) {
+    addTicker(found, match[1])
+  }
+  for (const match of text.matchAll(/\b[A-Z]{2,5}\b/g)) {
+    addTicker(found, match[0])
+  }
+  return [...found].sort()
+}
+
+function addTicker(found: Set<string>, raw: string): void {
+  const ticker = raw.toUpperCase()
+  if (TICKER_STOPWORDS.has(ticker)) return
+  found.add(ticker)
+}
+
+function scoreRedditSignal(opts: { item: NewsItem; subreddit: string; tickers: string[]; patternMatched: boolean }): number {
+  let score = 1
+  if (opts.tickers.length > 0) score += 2
+  if (opts.subreddit === 'tradewithcongress' || opts.subreddit === 'CongressStockTrading') score += 2
+  if (opts.subreddit === 'SecurityAnalysis' || opts.subreddit === 'ValueInvesting') score += 1
+  if (opts.patternMatched) score += 1
+  if (/\b(DD|due diligence|filing|disclosure|13F|Form 4|earnings|guidance|contract)\b/i.test(`${opts.item.title}\n${opts.item.content}`)) score += 1
+  return score
+}
+
+function reasonForRedditSignal(subreddit: string, tickers: string[]): string {
+  const tickerText = tickers.length > 0 ? `mentions ${tickers.join(', ')}` : 'no ticker detected'
+  return `r/${subreddit}; ${tickerText}; public Reddit post, verify against filings/news before acting`
+}
+
 // ==================== AI Tool factory ====================
 
 export function createNewsArchiveTools(provider: INewsProvider) {
@@ -307,6 +417,30 @@ to find the item (no need to repeat it).`,
           { id },
         )
         return result ?? { error: `Article id ${id} not found` }
+      },
+    }),
+
+    redditSignals: tool({
+      description: `Find public Reddit trading-signal posts from collected Reddit RSS feeds.
+
+This reads only Reddit feeds enabled in News Sources. Defaults include r/tradewithcongress,
+r/CongressStockTrading, r/SecurityAnalysis, r/ValueInvesting, r/stocks, r/investing,
+r/options, r/thetagang, and r/algotrading, but they are opt-in feeds because Reddit is noisy.
+
+Returns public leads only: every result is marked verificationRequired=true. Use filings,
+broker data, and ordinary news tools before treating any post as trade-relevant.`,
+      inputSchema: z.object({
+        lookback: z.string().optional().describe(`Time range: "1h", "12h", "1d", "7d" (searches up to ${NEWS_LIMIT} most recent Reddit feed items in the window)`),
+        tickers: z.array(z.string()).optional().describe('Optional ticker filter, e.g. ["NVDA", "TSLA"]. "$NVDA" is accepted.'),
+        subreddits: z.array(z.string()).optional().describe('Optional subreddit names without r/, e.g. ["tradewithcongress", "SecurityAnalysis"].'),
+        pattern: z.string().optional().describe('Optional regex over title+content, e.g. "congress|disclosure|pelosi".'),
+        limit: z.number().int().positive().max(REDDIT_SIGNAL_LIMIT).optional().describe(`Max results, default ${REDDIT_SIGNAL_LIMIT}.`),
+      }).meta({ examples: [{ lookback: '7d', tickers: ['NVDA'], subreddits: ['tradewithcongress'] }] }),
+      execute: async ({ lookback, tickers, subreddits, pattern, limit }) => {
+        return redditSignals(
+          { getNews: () => provider.getNewsV2({ endTime: new Date(), lookback, limit: NEWS_LIMIT }) },
+          { tickers, subreddits, pattern, limit },
+        )
       },
     }),
   }

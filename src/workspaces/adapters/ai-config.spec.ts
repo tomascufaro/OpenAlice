@@ -104,6 +104,8 @@ describe('codexAdapter AI-config', () => {
     })).toEqual([
       'codex',
       '-c',
+      'sandbox_workspace_write.network_access=true',
+      '-c',
       'mcp_servers.openalice.url="http://127.0.0.1:47332/mcp"',
       '-c',
       'mcp_servers.openalice-workspace.url="http://127.0.0.1:47332/mcp/ws-abc"',
@@ -118,6 +120,8 @@ describe('codexAdapter AI-config', () => {
     expect(codexAdapter.composeCommand([], { cwd: dir, env, resume: 'last' })).toEqual([
       'codex',
       '-c',
+      'sandbox_workspace_write.network_access=true',
+      '-c',
       'mcp_servers.openalice.url="http://127.0.0.1:47332/mcp"',
       '-c',
       'mcp_servers.openalice-workspace.url="http://127.0.0.1:47332/mcp/ws-abc"',
@@ -126,6 +130,8 @@ describe('codexAdapter AI-config', () => {
     ]);
     expect(codexAdapter.composeCommand([], { cwd: dir, env, resume: { sessionId: 'rollout-id' } })).toEqual([
       'codex',
+      '-c',
+      'sandbox_workspace_write.network_access=true',
       '-c',
       'mcp_servers.openalice.url="http://127.0.0.1:47332/mcp"',
       '-c',
