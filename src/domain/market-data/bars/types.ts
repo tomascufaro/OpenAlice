@@ -2,8 +2,8 @@
  * Federated bar layer — types.
  *
  * The bar layer is the *operational* identity namespace for K-lines (vs the
- * *reference* namespace — fundamentals/macro — which stays provider-first in
- * OpenTypeBB). A bar source is identified by a `barId`:
+ * *reference* namespace for fundamentals/macro). A bar source is identified by
+ * a `barId`:
  *
  *   barId = "{sourceId}|{nativeSymbol}"
  *
@@ -36,7 +36,7 @@ export interface BarRef {
 /** Split a barId on the FIRST `|` (nativeKey may itself contain separators). */
 export function parseBarId(barId: string): BarRef | null {
   const idx = barId.indexOf('|')
-  if (idx <= 0) return null
+  if (idx <= 0 || idx === barId.length - 1) return null
   return { sourceId: barId.slice(0, idx), nativeSymbol: barId.slice(idx + 1) }
 }
 

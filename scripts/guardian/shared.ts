@@ -4,118 +4,43 @@
  * Guardian is OpenAlice's L2 authority (see memory:port-architecture-3-layers).
  * Three carriers, one set of L2 responsibilities:
  *   - dev:    `scripts/guardian/dev.ts`, spawned by `pnpm dev`
- *   - prod:   `scripts/guardian/prod.mjs`, container CMD (Step 7)
+ *   - built:  `scripts/guardian/prod.mjs`, Docker CMD or local CLI child
  *   - desktop: Electron `main` process (future)
  *
  * Responsibilities (this module):
  *   - port probing
- *   - child-process spawning (UTA / Alice / Vite) with env injection
+ *   - child-process spawning (optional services / Alice / Vite) with env injection
  *   - HTTP readiness gates (`waitForHttp`)
  *   - signal forwarding + cascade shutdown
  *   - log line prefixing (dev only)
  *
- * Step 4 will add: watching `data/control/restart-uta.flag` so Guardian
- * SIGTERMs + respawns UTA without restarting Alice.
+ * Optional services use restart flags so Guardian can reconcile them without
+ * restarting Alice.
  */
 
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process'
-import { createDecipheriv } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { watch, mkdir, readFile } from 'node:fs/promises'
+import { watch, mkdir, readFile, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, basename, resolve } from 'node:path'
 import { probeFreePort } from '../probe-port.js'
+import { resolveLaunchCommand, resolveStockNpmShim } from '../../src/workspaces/win-command.js'
+
+export {
+  isLiteModeEnv,
+  parseGuardianTradingModeEnv,
+  resolveGuardianTradingMode,
+  type GuardianTradingMode,
+  type GuardianTradingModePlan,
+} from '../../packages/guardian-runtime/src/trading-mode.js'
 
 export interface GuardianPorts {
   webPort: number
   mcpPort: number
   utaPort: number
+  connectorPort: number
   /** Vite dev-server port — resolved by Guardian (dev only; prod has no Vite). */
   uiPort: number
-}
-
-export function isLiteModeEnv(env: NodeJS.ProcessEnv): boolean {
-  return truthyEnv(env['OPENALICE_LITE_MODE']) || truthyEnv(env['OPENALICE_UTA_DISABLED'])
-}
-
-export type GuardianTradingMode = 'lite' | 'readonly' | 'pro'
-
-export interface GuardianTradingModePlan {
-  mode: GuardianTradingMode
-  source: 'env' | 'config' | 'auto'
-  envLocked: boolean
-  hasUTAConfig: boolean
-}
-
-export function parseGuardianTradingModeEnv(env: NodeJS.ProcessEnv): GuardianTradingMode | null {
-  const raw = env['OPENALICE_TRADING_MODE']?.trim().toLowerCase()
-  if (raw === 'lite' || raw === 'readonly' || raw === 'pro') return raw
-  return isLiteModeEnv(env) ? 'lite' : null
-}
-
-export async function resolveGuardianTradingMode(
-  env: NodeJS.ProcessEnv,
-  userDataHome: string,
-): Promise<GuardianTradingModePlan> {
-  const envMode = parseGuardianTradingModeEnv(env)
-  const configuredMode = await readPersistedTradingMode(userDataHome)
-  const hasUTAConfig = await hasPersistedUTAs(userDataHome)
-  if (envMode) return { mode: envMode, source: 'env', envLocked: true, hasUTAConfig }
-  if (configuredMode) return { mode: configuredMode, source: 'config', envLocked: false, hasUTAConfig }
-  return { mode: hasUTAConfig ? 'pro' : 'lite', source: 'auto', envLocked: false, hasUTAConfig }
-}
-
-async function readPersistedTradingMode(userDataHome: string): Promise<GuardianTradingMode | null> {
-  try {
-    const raw = JSON.parse(await readFile(resolve(userDataHome, 'data', 'config', 'trading.json'), 'utf8')) as { mode?: unknown }
-    return raw.mode === 'lite' || raw.mode === 'readonly' || raw.mode === 'pro' ? raw.mode : null
-  } catch {
-    return null
-  }
-}
-
-async function hasPersistedUTAs(userDataHome: string): Promise<boolean> {
-  try {
-    const raw = JSON.parse(await readFile(resolve(userDataHome, 'data', 'config', 'accounts.json'), 'utf8'))
-    const accounts = isSealedEnvelope(raw)
-      ? await unsealGuardianAccounts(userDataHome, raw)
-      : raw
-    return Array.isArray(accounts) && accounts.length > 0
-  } catch {
-    return false
-  }
-}
-
-function isSealedEnvelope(value: unknown): value is { alg: string; iv: string; tag: string; data: string } {
-  return (
-    typeof value === 'object' && value !== null &&
-    (value as Record<string, unknown>)['$sealed'] === 1 &&
-    typeof (value as Record<string, unknown>)['iv'] === 'string' &&
-    typeof (value as Record<string, unknown>)['tag'] === 'string' &&
-    typeof (value as Record<string, unknown>)['data'] === 'string'
-  )
-}
-
-async function unsealGuardianAccounts(
-  userDataHome: string,
-  envelope: { alg: string; iv: string; tag: string; data: string },
-): Promise<unknown> {
-  if (envelope.alg !== 'aes-256-gcm') return []
-  const keyRaw = (await readFile(resolve(userDataHome, 'sealing.key'), 'utf8')).trim()
-  const key = Buffer.from(keyRaw, 'base64')
-  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64'))
-  decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'))
-  const plaintext = Buffer.concat([
-    decipher.update(Buffer.from(envelope.data, 'base64')),
-    decipher.final(),
-  ])
-  return JSON.parse(plaintext.toString('utf8')) as unknown
-}
-
-function truthyEnv(raw: string | undefined): boolean {
-  if (raw === undefined || raw === '') return false
-  const normalized = raw.toLowerCase()
-  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
 }
 
 // ── Port configuration (L1 → L2) ────────────────────────────
@@ -124,7 +49,7 @@ function truthyEnv(raw: string | undefined): boolean {
 // them into the children via env (see memory:port-architecture-3-layers).
 // User-facing configuration lives in L1 — `data/config/ports.json`:
 //
-//   { "web": 47331, "mcp": 47332, "uta": 47333, "ui": 5173 }   (all keys optional)
+//   { "web": 47331, "mcp": 47332, "uta": 47333, "connector": 47334, "ui": 5173 }
 //
 // Deliberately a data/config file and NOT a dotenv file: the data dir is the
 // one location every topology agrees on (dev repo, docker volume, Electron
@@ -136,7 +61,7 @@ function truthyEnv(raw: string | undefined): boolean {
 // drifting off a value the user pinned would be worse than aborting. Only
 // unconfigured ports keep the probe-upward-from-default behavior.
 
-const PORT_DEFAULTS = { web: 47331, mcp: 47332, uta: 47333, ui: 5173 } as const
+const PORT_DEFAULTS = { web: 47331, mcp: 47332, uta: 47333, connector: 47334, ui: 5173 } as const
 
 export type PortName = keyof typeof PORT_DEFAULTS
 
@@ -152,6 +77,7 @@ const ENV_KEYS: Record<PortName, string> = {
   web: 'OPENALICE_WEB_PORT',
   mcp: 'OPENALICE_MCP_PORT',
   uta: 'OPENALICE_UTA_PORT',
+  connector: 'OPENALICE_CONNECTOR_PORT',
   ui: 'OPENALICE_UI_PORT',
 }
 
@@ -183,7 +109,7 @@ export async function readPortsFile(userDataHome: string): Promise<Partial<Recor
     throw new Error(`[guardian] ${filePath} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`)
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`[guardian] ${filePath} must be a JSON object like {"web":47331,"mcp":47332,"uta":47333,"ui":5173}`)
+    throw new Error(`[guardian] ${filePath} must be a JSON object like {"web":47331,"mcp":47332,"uta":47333,"connector":47334,"ui":5173}`)
   }
   const out: Partial<Record<PortName, number>> = {}
   for (const name of Object.keys(PORT_DEFAULTS) as PortName[]) {
@@ -207,7 +133,13 @@ export function resolvePortConfig(
     if (fromFile !== undefined) return { value: fromFile, source: 'file' }
     return { value: PORT_DEFAULTS[name], source: 'default' }
   }
-  return { web: pick('web'), mcp: pick('mcp'), uta: pick('uta'), ui: pick('ui') }
+  return {
+    web: pick('web'),
+    mcp: pick('mcp'),
+    uta: pick('uta'),
+    connector: pick('connector'),
+    ui: pick('ui'),
+  }
 }
 
 /**
@@ -218,7 +150,7 @@ export function resolvePortConfig(
  * (not left to Vite's own auto-increment) so Guardian can print the real
  * URL and inject the value into Alice for the WS-origin allowlist.
  */
-export async function planPorts(cfg: PortConfig, opts?: { skipUta?: boolean }): Promise<GuardianPorts> {
+export async function planPorts(cfg: PortConfig, opts?: { skipUta?: boolean; skipConnector?: boolean }): Promise<GuardianPorts> {
   const claim = async (name: PortName, choice: PortChoice, probeStart: number): Promise<number> => {
     if (choice.source === 'default') return probeFreePort(probeStart)
     try {
@@ -234,12 +166,15 @@ export async function planPorts(cfg: PortConfig, opts?: { skipUta?: boolean }): 
   const utaPort = opts?.skipUta === true
     ? cfg.uta.value
     : await claim('uta', cfg.uta, Math.max(PORT_DEFAULTS.uta, mcpPort + 1))
+  const connectorPort = opts?.skipConnector === true
+    ? cfg.connector.value
+    : await claim('connector', cfg.connector, Math.max(PORT_DEFAULTS.connector, utaPort + 1))
   const uiPort = await claim('ui', cfg.ui, PORT_DEFAULTS.ui)
-  return { webPort, mcpPort, utaPort, uiPort }
+  return { webPort, mcpPort, utaPort, connectorPort, uiPort }
 }
 
 export interface SpawnSpec {
-  name: 'uta' | 'alice' | 'vite'
+  name: string
   command: string
   args: string[]
   env: NodeJS.ProcessEnv
@@ -287,7 +222,20 @@ export function resolveWindowsBin(
 }
 
 export function spawnChild(spec: SpawnSpec): ChildProcess {
-  const child = spawn(resolveWindowsBin(spec.command), spec.args, {
+  const resolvedBin = resolveWindowsBin(spec.command)
+  const unquotedBin = resolvedBin.startsWith('"') && resolvedBin.endsWith('"')
+    ? resolvedBin.slice(1, -1)
+    : resolvedBin
+  const directNpm = process.platform === 'win32'
+    ? resolveStockNpmShim(unquotedBin, spec.args, process.execPath)
+    : null
+  const pathResolved = process.platform === 'win32' && directNpm === null
+    ? resolveLaunchCommand([spec.command, ...spec.args], { env: spec.env, nodeExecPath: process.execPath })
+    : null
+  const launch = directNpm ?? pathResolved?.argv ?? [resolvedBin, ...spec.args]
+  const command = launch[0]!
+  const args = launch.slice(1)
+  const child = spawn(command, args, {
     env: spec.env,
     stdio: spec.prefixLogs ? ['inherit', 'pipe', 'pipe'] : 'inherit',
     // On Windows the dev commands (`tsx`, `pnpm`) are `.cmd` shims in
@@ -296,7 +244,12 @@ export function spawnChild(spec: SpawnSpec): ChildProcess {
     // Git-Bash PATH may not even carry .bin, so the command is resolved to its
     // absolute shim above. POSIX resolves the bin dir directly, so keep shell
     // off there. Args here have no spaces, so shell quoting isn't a concern.
-    shell: process.platform === 'win32',
+    // Stock npm shims are parsed conservatively and run as
+    // `node <real-js-entry> ...args`, avoiding cmd.exe entirely. This keeps
+    // UTA/Vite descendants attached to the child Guardian tracks, so restart
+    // and teardown can reap the whole tree. Unknown/custom batch wrappers keep
+    // the legacy shell fallback.
+    shell: process.platform === 'win32' && directNpm === null && pathResolved?.viaShell === true,
   } satisfies SpawnOptions)
 
   if (spec.prefixLogs) {
@@ -369,7 +322,7 @@ export async function waitForHttp(url: string, opts: {
  *  twice on rapid SIGINT or child crash + signal race).
  *
  *  `children` is the initial set; `trackReplacement(old, next)` rewires
- *  exit-listeners when UTAController respawns its child. */
+ *  exit-listeners when an OptionalServiceController respawns its child. */
 export interface CascadeOpts {
   children: ChildProcess[]
   /** Grace period before SIGKILL fallback. */
@@ -380,6 +333,8 @@ export interface CascadeOpts {
   /** Set true on children whose exit should NOT cascade — UTA during a
    *  Guardian-initiated restart. */
   expectedExits?: Set<ChildProcess>
+  /** Release process-wide ownership only after all children have been stopped. */
+  onShutdown?: () => void | Promise<void>
 }
 
 export interface CascadeControl {
@@ -414,7 +369,9 @@ export function installCascadeShutdown(opts: CascadeOpts): CascadeControl {
           killTree(c, 'SIGKILL')
         }
       }
-      process.exit(0)
+      void Promise.resolve(opts.onShutdown?.())
+        .catch((err) => console.error('[guardian] shutdown cleanup failed:', err))
+        .finally(() => process.exit(0))
     }, graceMs).unref()
   }
 
@@ -477,7 +434,7 @@ function childTag(c: ChildProcess, _all: ChildProcess[]): string {
  * Restart path = startup path: SIGTERM the old, wait exit, re-spawn with
  * same spec, gate Alice's BFF on the new health endpoint.
  */
-export class UTAController {
+export class OptionalServiceController {
   private child: ChildProcess
   private restarting = false
   /** Optional cascade hooks. UTA respawn must inform cascade so SIGINT
@@ -499,12 +456,12 @@ export class UTAController {
 
   async restart(): Promise<void> {
     if (this.restarting) {
-      console.log(`[guardian] UTA restart already in progress, skipping`)
+      console.log(`[guardian] ${this.spec.name} restart already in progress, skipping`)
       return
     }
     this.restarting = true
     try {
-      console.log(`[guardian] restarting UTA`)
+      console.log(`[guardian] restarting ${this.spec.name}`)
       const old = this.child
       this.cascade?.expectExit(old)
       const exited = new Promise<void>((resolve) => old.once('exit', () => resolve()))
@@ -521,13 +478,23 @@ export class UTAController {
 
       const ready = await waitForHttp(this.healthUrl, { timeoutMs: 15_000 })
       if (!ready) {
-        console.error(`[guardian] UTA failed to come back up after restart`)
+        console.error(`[guardian] ${this.spec.name} failed to come back up after restart`)
         return
       }
-      console.log(`[guardian] UTA back online`)
+      console.log(`[guardian] ${this.spec.name} back online`)
     } finally {
       this.restarting = false
     }
+  }
+}
+
+export async function readConnectorServiceEnabled(userDataHome: string): Promise<boolean> {
+  const filePath = resolve(userDataHome, 'data', 'config', 'connector-service.json')
+  try {
+    const value = JSON.parse(await readFile(filePath, 'utf8')) as { enabled?: unknown }
+    return value.enabled === true
+  } catch {
+    return false
   }
 }
 
@@ -555,6 +522,17 @@ export async function startFlagWatcher(opts: FlagWatchOpts): Promise<() => void>
 
   const abort = new AbortController()
   let pending: NodeJS.Timeout | undefined
+  let checking = false
+
+  const fingerprint = async (): Promise<string | null> => {
+    try {
+      const info = await stat(opts.flagPath)
+      return `${info.mtimeMs}:${info.size}`
+    } catch {
+      return null
+    }
+  }
+  let lastFingerprint = await fingerprint()
 
   const fire = (): void => {
     if (pending) clearTimeout(pending)
@@ -566,11 +544,29 @@ export async function startFlagWatcher(opts: FlagWatchOpts): Promise<() => void>
     }, debounceMs)
   }
 
+  const checkForChange = async (): Promise<void> => {
+    if (checking) return
+    checking = true
+    try {
+      const next = await fingerprint()
+      if (next !== lastFingerprint) {
+        lastFingerprint = next
+        fire()
+      }
+    } finally {
+      checking = false
+    }
+  }
+
   ;(async () => {
     try {
+      // Node 24/libuv can native-assert (not throw) when fs.watch observes a
+      // Windows 8.3 short-path temp directory. Windows file events are also
+      // the least reliable here, so polling below is the primary Win32 path.
+      if (process.platform === 'win32') return
       const watcher = watch(dirname(opts.flagPath), { signal: abort.signal })
       for await (const evt of watcher) {
-        if (evt.filename === basename(opts.flagPath)) fire()
+        if (evt.filename === basename(opts.flagPath)) await checkForChange()
       }
     } catch (err) {
       if ((err as { name?: string }).name === 'AbortError') return
@@ -578,5 +574,15 @@ export async function startFlagWatcher(opts: FlagWatchOpts): Promise<() => void>
     }
   })().catch(() => { /* swallow — already logged */ })
 
-  return () => abort.abort()
+  // Poll the file signature as the Windows primary path and a POSIX backstop;
+  // the shared fingerprint keeps an fs.watch event and the subsequent poll
+  // from triggering two restarts for the same write.
+  const poll = setInterval(() => { void checkForChange() }, 1_000)
+  poll.unref()
+
+  return () => {
+    abort.abort()
+    clearInterval(poll)
+    if (pending) clearTimeout(pending)
+  }
 }

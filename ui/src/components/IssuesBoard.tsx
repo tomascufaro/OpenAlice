@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import type { TFunction } from 'i18next'
+import { useTranslation } from 'react-i18next'
 import {
   Bot,
   ChevronDown,
@@ -8,17 +10,25 @@ import {
   ListChecks,
 } from 'lucide-react'
 
-import type { IssueListItem, IssuePriority, IssueStatus, IssueWorkspace } from '../api/issues'
+import type {
+  IssueAutomationHealth,
+  IssueAutomationHealthState,
+  IssueListItem,
+  IssuePriority,
+  IssueStatus,
+  IssueWorkspace,
+} from '../api/issues'
 import type { ScheduleWhen } from '../api/schedule'
 import { useIssues } from '../hooks/useIssues'
 import { useWorkspaces } from '../contexts/workspaces-context'
+import { formatRelativeTime } from '../lib/intl'
 import { useWorkspace } from '../tabs/store'
 import { CenteredLoading } from './StateViews'
 import { STATUS_META } from './issue-status-meta'
 
 // ==================== Cadence pill (lifted from AutomationSchedulesSection) ====================
 
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
 
 function two(n: number): string {
   return String(n).padStart(2, '0')
@@ -30,10 +40,10 @@ function cronInt(field: string, min: number, max: number): number | null {
   return n >= min && n <= max ? n : null
 }
 
-function cronDayPhrase(field: string): string | null {
-  if (field === '*') return 'day'
-  if (field === '1-5') return 'weekday'
-  if (field === '0,6' || field === '6,0') return 'weekend'
+function cronDayPhrase(field: string, t: TFunction): string | null {
+  if (field === '*') return t('issues.cadence.day')
+  if (field === '1-5') return t('issues.cadence.weekday')
+  if (field === '0,6' || field === '6,0') return t('issues.cadence.weekend')
   const out: string[] = []
   for (const part of field.split(',')) {
     const range = part.match(/^(\d+)-(\d+)$/)
@@ -41,47 +51,53 @@ function cronDayPhrase(field: string): string | null {
       const start = cronInt(range[1], 0, 7)
       const end = cronInt(range[2], 0, 7)
       if (start === null || end === null || start > end) return null
-      out.push(`${WEEKDAYS[start === 7 ? 0 : start]}-${WEEKDAYS[end === 7 ? 0 : end]}`)
+      const startKey = WEEKDAY_KEYS[start === 7 ? 0 : start]
+      const endKey = WEEKDAY_KEYS[end === 7 ? 0 : end]
+      out.push(`${t(`issues.weekday.${startKey}`)}-${t(`issues.weekday.${endKey}`)}`)
       continue
     }
     const n = cronInt(part, 0, 7)
     if (n === null) return null
-    out.push(WEEKDAYS[n === 7 ? 0 : n])
+    out.push(t(`issues.weekday.${WEEKDAY_KEYS[n === 7 ? 0 : n]}`))
   }
   return out.length > 0 ? Array.from(new Set(out)).join(', ') : null
 }
 
-function cronLabel(expr: string): string {
+function cronLabel(expr: string, t: TFunction): string {
   const parts = expr.trim().split(/\s+/)
-  if (parts.length !== 5) return 'Every custom schedule'
+  if (parts.length !== 5) return t('issues.cadence.custom')
   const [minute, hour, dayOfMonth, month, dayOfWeek] = parts
   if (minute === '*' && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    return 'Every minute'
+    return t('issues.cadence.everyMinute')
   }
   const minuteStep = minute.match(/^\*\/(\d+)$/)
   if (minuteStep && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    return `Every ${minuteStep[1]}m`
+    return t('issues.cadence.everyDuration', { duration: `${minuteStep[1]}m` })
   }
   const hourStep = hour.match(/^\*\/(\d+)$/)
   if (minute === '0' && hourStep && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    return `Every ${hourStep[1]}h`
+    return t('issues.cadence.everyDuration', { duration: `${hourStep[1]}h` })
   }
   if (minute === '0' && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    return 'Every hour'
+    return t('issues.cadence.everyHour')
   }
   const m = cronInt(minute, 0, 59)
   const h = cronInt(hour, 0, 23)
-  if (m === null || h === null) return 'Every custom schedule'
+  if (m === null || h === null) return t('issues.cadence.custom')
   const time = `${two(h)}:${two(m)}`
   if (month === '*' && dayOfMonth === '*') {
-    const dayPhrase = cronDayPhrase(dayOfWeek)
-    return dayPhrase ? `Every ${dayPhrase} ${time}` : `Every custom schedule ${time}`
+    const dayPhrase = cronDayPhrase(dayOfWeek, t)
+    return dayPhrase
+      ? t('issues.cadence.everyDayAt', { day: dayPhrase, time })
+      : t('issues.cadence.customAt', { time })
   }
   if (month === '*' && dayOfWeek === '*') {
     const dom = cronInt(dayOfMonth, 1, 31)
-    return dom === null ? `Every custom schedule ${time}` : `Every month on day ${dom} ${time}`
+    return dom === null
+      ? t('issues.cadence.customAt', { time })
+      : t('issues.cadence.everyMonthDayAt', { day: dom, time })
   }
-  return `Every custom schedule ${time}`
+  return t('issues.cadence.customAt', { time })
 }
 
 function onceLabel(at: string): string {
@@ -99,36 +115,75 @@ function onceLabel(at: string): string {
 }
 
 /** Short pill label: one-shots show their time; recurring schedules start with "Every". */
-function cadenceLabel(when: ScheduleWhen): string {
+function cadenceLabel(when: ScheduleWhen, t: TFunction): string {
   switch (when.kind) {
     case 'at':
       return onceLabel(when.at)
     case 'every':
-      return `Every ${when.every}`
+      return t('issues.cadence.everyDuration', { duration: when.every })
     case 'cron':
-      return cronLabel(when.cron)
+      return cronLabel(when.cron, t)
   }
 }
 
-function cadenceTitle(when: ScheduleWhen): string {
+function cadenceTitle(when: ScheduleWhen, t: TFunction): string {
   switch (when.kind) {
     case 'at':
       return `${onceLabel(when.at)} (${when.at})`
     case 'every':
-      return `Every ${when.every}`
+      return t('issues.cadence.everyDuration', { duration: when.every })
     case 'cron':
-      return `${cronLabel(when.cron)} (${when.cron})`
+      return `${cronLabel(when.cron, t)} · ${when.timezone ?? t('issues.cadence.localTime')} (${when.cron})`
   }
 }
 
 export function CadencePill({ when }: { when: ScheduleWhen }) {
+  const { t } = useTranslation()
   return (
     <span
-      title={cadenceTitle(when)}
-      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-[11px] font-medium text-muted"
+      title={cadenceTitle(when, t)}
+      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
     >
-      <Clock size={10} className="text-muted/70" />
-      {cadenceLabel(when)}
+      <Clock size={10} className="text-muted-foreground/70" />
+      {cadenceLabel(when, t)}
+      {when.kind === 'cron' && (
+        <span className="text-muted-foreground/70">· {when.timezone ?? t('issues.cadence.local')}</span>
+      )}
+    </span>
+  )
+}
+
+const AUTOMATION_HEALTH_CLASS: Record<IssueAutomationHealthState, string> = {
+  inactive: 'bg-muted text-muted-foreground',
+  not_started: 'bg-muted text-muted-foreground',
+  due: 'bg-warning/15 text-warning',
+  running: 'bg-info/15 text-info',
+  healthy: 'bg-success/15 text-success',
+  interrupted: 'bg-warning/15 text-warning',
+  failed: 'bg-destructive/15 text-destructive',
+  blocked: 'bg-destructive/15 text-destructive',
+}
+
+const BOARD_HEALTH_CLASS: Record<IssueAutomationHealthState, string> = {
+  inactive: 'text-muted-foreground/70',
+  not_started: 'text-muted-foreground/70',
+  due: 'text-warning',
+  running: 'text-info',
+  healthy: 'text-success/85',
+  interrupted: 'rounded-md bg-warning/15 px-2 py-1 text-warning',
+  failed: 'rounded-md bg-destructive/15 px-2 py-1 text-destructive',
+  blocked: 'rounded-md bg-destructive/15 px-2 py-1 text-destructive',
+}
+
+export function AutomationHealthPill({ health }: { health: IssueAutomationHealth }) {
+  const { t } = useTranslation()
+  return (
+    <span
+      title={health.message}
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${AUTOMATION_HEALTH_CLASS[health.state]}`}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+      {t(`issues.health.${health.state}`)}
     </span>
   )
 }
@@ -141,12 +196,13 @@ export function CadencePill({ when }: { when: ScheduleWhen }) {
  * `!` so it never reads as "just high".
  */
 export function PriorityIndicator({ priority }: { priority: IssuePriority }) {
+  const { t } = useTranslation()
   if (priority === 'urgent') {
     return (
       <span
-        title="Urgent"
-        aria-label="Urgent priority"
-        className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-amber-500 text-[10px] font-bold leading-none text-black"
+        title={t('issues.priority.urgent')}
+        aria-label={t('issues.priority.label', { priority: t('issues.priority.urgent') })}
+        className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-warning text-[10px] font-bold leading-none text-warning-foreground"
       >
         !
       </span>
@@ -156,8 +212,8 @@ export function PriorityIndicator({ priority }: { priority: IssuePriority }) {
   const heights = [4, 7, 10]
   return (
     <span
-      title={`${priority} priority`}
-      aria-label={`${priority} priority`}
+      title={t('issues.priority.label', { priority: t(`issues.priority.${priority}`) })}
+      aria-label={t('issues.priority.label', { priority: t(`issues.priority.${priority}`) })}
       className="inline-flex h-3.5 w-3.5 shrink-0 items-end justify-center gap-[1.5px]"
     >
       {heights.map((h, i) => (
@@ -191,6 +247,8 @@ interface AgentRuntime {
   id: string
   displayName: string
   source: 'override' | 'issue-default' | 'workspace-default' | 'workspace'
+  /** Explicit frontmatter only matters in the board when it differs from the effective default. */
+  distinctOverride?: boolean
 }
 
 /** Normalised collision key — title, trimmed + lowercased. Mirrors the server's
@@ -210,19 +268,29 @@ function resolveAgentRuntime(
   issueDefaultAgent: string | null,
   defaultAgent: string | null,
 ): AgentRuntime | undefined {
-  if (issue.agent) {
-    return { id: issue.agent, displayName: agentName(issue.agent, agents), source: 'override' }
+  if (!workspace) {
+    return issue.agent
+      ? { id: issue.agent, displayName: agentName(issue.agent, agents), source: 'override', distinctOverride: true }
+      : undefined
   }
-  if (!workspace) return undefined
   const runtimeIds = workspace.agents.filter((id) => {
     const agent = agents.find((a) => a.id === id)
     return agent ? agent.kind !== 'utility' : id !== 'shell'
   })
   const issueDefaultId = issueDefaultAgent && runtimeIds.includes(issueDefaultAgent) ? issueDefaultAgent : null
+  const workspaceDefaultId = defaultAgent && runtimeIds.includes(defaultAgent) ? defaultAgent : null
+  const effectiveDefaultId = issueDefaultId ?? workspaceDefaultId ?? runtimeIds[0] ?? null
+  if (issue.agent) {
+    return {
+      id: issue.agent,
+      displayName: agentName(issue.agent, agents),
+      source: 'override',
+      distinctOverride: issue.agent !== effectiveDefaultId,
+    }
+  }
   if (issueDefaultId) {
     return { id: issueDefaultId, displayName: agentName(issueDefaultId, agents), source: 'issue-default' }
   }
-  const workspaceDefaultId = defaultAgent && runtimeIds.includes(defaultAgent) ? defaultAgent : null
   if (workspaceDefaultId) {
     return { id: workspaceDefaultId, displayName: agentName(workspaceDefaultId, agents), source: 'workspace-default' }
   }
@@ -232,74 +300,151 @@ function resolveAgentRuntime(
     : undefined
 }
 
-function AgentRuntimePill({ runtime }: { runtime: AgentRuntime }) {
-  // Accent/ring means "this issue explicitly overrides the runtime"; credential
-  // readiness is a separate workspace concern and must not be inferred here.
-  const title =
-    runtime.source === 'override'
-      ? `Agent runtime override: ${runtime.displayName}`
-      : runtime.source === 'issue-default'
-        ? `Agent runtime: ${runtime.displayName} (issue default)`
-      : runtime.source === 'workspace-default'
-        ? `Agent runtime: ${runtime.displayName} (workspace default)`
-        : `Agent runtime: ${runtime.displayName} (workspace fallback)`
+const ATTENTION_ORDER: Record<IssueAutomationHealthState, number> = {
+  blocked: 0,
+  failed: 1,
+  interrupted: 2,
+  running: 3,
+  due: 4,
+  not_started: 5,
+  healthy: 6,
+  inactive: 7,
+}
+
+const PRIORITY_ORDER: Record<IssuePriority, number> = {
+  urgent: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  none: 4,
+}
+
+function boardRowOrder(a: BoardRow, b: BoardRow): number {
+  const aAttention = a.issue.automationHealth ? ATTENTION_ORDER[a.issue.automationHealth.state] : 4
+  const bAttention = b.issue.automationHealth ? ATTENTION_ORDER[b.issue.automationHealth.state] : 4
+  if (aAttention !== bAttention) return aAttention - bAttention
+
+  const priority = PRIORITY_ORDER[a.issue.priority] - PRIORITY_ORDER[b.issue.priority]
+  if (priority !== 0) return priority
+
+  const aDue = a.issue.nextDueAtMs ?? Number.POSITIVE_INFINITY
+  const bDue = b.issue.nextDueAtMs ?? Number.POSITIVE_INFINITY
+  if (aDue !== bDue) return aDue - bDue
+  return a.issue.title.localeCompare(b.issue.title)
+}
+
+function BoardHealth({ issue }: { issue: IssueListItem }) {
+  const { t } = useTranslation()
+  const health = issue.automationHealth
+  if (!health) return null
+  const active = health.state === 'running' || health.state === 'due'
+  const lastRun = issue.lastFiredAtMs ? formatRelativeTime(issue.lastFiredAtMs) : ''
+
   return (
     <span
-      title={title}
-      aria-label={title}
-      className={`hidden shrink-0 items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[11px] sm:inline-flex ${
-        runtime.source === 'override'
-          ? 'bg-bg-tertiary text-text ring-1 ring-accent/30'
-          : 'bg-bg-tertiary text-muted'
-      }`}
+      title={health.message}
+      className={`inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium ${BOARD_HEALTH_CLASS[health.state]}`}
     >
-      <Bot size={10} aria-hidden className="opacity-80" />
-      {runtime.id}
+      <span className={`h-1.5 w-1.5 rounded-full bg-current ${active ? 'animate-pulse' : ''}`} aria-hidden />
+      {t(`issues.health.${health.state}`)}
+      {lastRun && <span className="font-normal text-muted-foreground/55">· {lastRun}</span>}
     </span>
   )
 }
 
+function BoardCadence({ issue }: { issue: IssueListItem }) {
+  const { t } = useTranslation()
+  if (!issue.when) return null
+  const nextRun = issue.nextDueAtMs ? formatRelativeTime(issue.nextDueAtMs) : ''
+  return (
+    <span
+      title={cadenceTitle(issue.when, t)}
+      className="inline-flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground/75"
+    >
+      <Clock size={11} className="shrink-0 text-muted-foreground/55" aria-hidden />
+      <span className="truncate">{cadenceLabel(issue.when, t)}</span>
+      {nextRun && <span className="shrink-0 text-muted-foreground/50">· {nextRun}</span>}
+    </span>
+  )
+}
+
+function BoardAutomationSummary({ issue, className = '' }: { issue: IssueListItem; className?: string }) {
+  if (!issue.when && !issue.automationHealth) return null
+  return (
+    <div className={`flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 ${className}`}>
+      <BoardHealth issue={issue} />
+      <BoardCadence issue={issue} />
+    </div>
+  )
+}
+
 function IssueRow({ wsId, wsTag, issue, agentRuntime, dupOthers, onOpen }: BoardRow & { onOpen: () => void }) {
+  const { t } = useTranslation()
   const terminal = issue.status === 'done' || issue.status === 'canceled'
+  const titleMatchesId = issue.title.trim().toLowerCase() === issue.id.trim().toLowerCase()
+  const explicitAssignee = issue.assignee !== '@workspace'
+  const explicitAgent = agentRuntime?.source === 'override' && agentRuntime.distinctOverride !== false
+  const assigneeLabel = issue.assignee === '@new' ? t('issues.assignOnFirstRun') : issue.assignee
   return (
     <li>
       <button
         type="button"
         onClick={onOpen}
-        title={`Open ${issue.id}`}
-        className={`flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-bg-tertiary/40 ${
+        title={t('issues.openIssue', { id: issue.id })}
+        className={`oa-pressable flex w-full items-start gap-3 px-3.5 py-3 text-left transition-colors hover:bg-muted/35 sm:px-4 ${
           terminal ? 'opacity-60' : ''
         }`}
       >
-        <PriorityIndicator priority={issue.priority} />
-        <span
-          title={issue.id}
-          className="hidden max-w-[8rem] shrink-0 truncate font-mono text-[11px] text-muted/70 sm:inline"
-        >
-          {issue.id}
+        <span className="mt-0.5 flex h-5 w-4 shrink-0 items-center justify-center">
+          <PriorityIndicator priority={issue.priority} />
         </span>
-        <span title={issue.title} className="min-w-0 flex-1 truncate text-[13px] text-text">
-          {issue.title}
-        </span>
-        {issue.nameCollision && (
-          <span
-            title={`Duplicate name — also used in ${dupOthers ?? 1} other workspace${
-              (dupOthers ?? 1) === 1 ? '' : 's'
-            }. A [[name]] is a global handle; resolve manually.`}
-            aria-label="Duplicate issue name across workspaces"
-            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400"
-          >
-            <Copy size={10} aria-hidden /> dup
-          </span>
-        )}
-        {issue.when && <CadencePill when={issue.when} />}
-        {(issue.when || issue.agent) && agentRuntime && <AgentRuntimePill runtime={agentRuntime} />}
-        <span className="hidden shrink-0 text-xs text-muted sm:inline" title={`Assignee: ${issue.assignee}`}>
-          {issue.assignee}
-        </span>
-        <span className="shrink-0 rounded-full bg-bg-tertiary px-2 py-0.5 text-[11px] text-muted" title={`Workspace: ${wsTag} (${wsId.slice(0, 8)})`}>
-          {wsTag}
-        </span>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span title={issue.title} className="min-w-0 truncate text-[13px] font-medium text-foreground sm:text-[13.5px]">
+              {issue.title}
+            </span>
+            {issue.nameCollision && (
+              <span
+                title={t((dupOthers ?? 1) === 1 ? 'issues.duplicateOne' : 'issues.duplicateMany', {
+                  count: dupOthers ?? 1,
+                })}
+                aria-label={t('issues.duplicateLabel')}
+                className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/10 px-1.5 py-0.5 text-[9px] font-medium text-warning"
+              >
+                <Copy size={9} aria-hidden /> {t('issues.duplicateShort')}
+              </span>
+            )}
+          </div>
+
+          <BoardAutomationSummary issue={issue} className="mt-2 lg:hidden" />
+
+          <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[10.5px] text-muted-foreground/60">
+            <span className="truncate" title={t('issues.workspaceTitle', { workspace: wsTag, id: wsId.slice(0, 8) })}>
+              {wsTag}
+            </span>
+            {!titleMatchesId && (
+              <span className="hidden max-w-[14rem] truncate font-mono text-muted-foreground/45 sm:inline" title={t('issues.issueIdTitle', { id: issue.id })}>
+                #{issue.id}
+              </span>
+            )}
+            {explicitAssignee && (
+              <span className="max-w-[14rem] truncate text-muted-foreground/70" title={t('issues.assigneeTitle', { assignee: issue.assignee })}>
+                {assigneeLabel}
+              </span>
+            )}
+            {explicitAgent && agentRuntime && (
+              <span className="inline-flex items-center gap-1 text-muted-foreground/70" title={t('issues.agentOverrideTitle', { agent: agentRuntime.displayName })}>
+                <Bot size={10} aria-hidden /> {t('issues.agentOverrideShort', { agent: agentRuntime.id })}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <BoardAutomationSummary
+          issue={issue}
+          className="hidden max-w-[48%] shrink-0 justify-end lg:flex"
+        />
       </button>
     </li>
   )
@@ -318,23 +463,26 @@ function StatusGroup({
   onToggle: () => void
   onOpenRow: (row: BoardRow) => void
 }) {
+  const { t } = useTranslation()
   const meta = STATUS_META[status]
+  const statusLabel = t(`issues.status.${status}`)
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-bg-secondary">
+    <div className="overflow-hidden rounded-lg border border-border bg-secondary">
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={!collapsed}
-        className="flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-bg-tertiary/40"
+        aria-label={t(collapsed ? 'issues.expandStatus' : 'issues.collapseStatus', { status: statusLabel })}
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-muted/40"
       >
         {collapsed ? (
-          <ChevronRight size={14} className="shrink-0 text-muted/70" />
+          <ChevronRight size={14} className="shrink-0 text-muted-foreground/70" />
         ) : (
-          <ChevronDown size={14} className="shrink-0 text-muted/70" />
+          <ChevronDown size={14} className="shrink-0 text-muted-foreground/70" />
         )}
         <meta.Icon size={14} className={`shrink-0 ${meta.className}`} />
-        <span className="text-[13px] font-semibold text-text">{meta.label}</span>
-        <span className="text-xs text-muted">{rows.length}</span>
+        <span className="text-[13px] font-semibold text-foreground">{statusLabel}</span>
+        <span className="text-xs text-muted-foreground">{rows.length}</span>
       </button>
       {!collapsed && (
         <ul className="divide-y divide-border/60 border-t border-border">
@@ -354,17 +502,18 @@ function StatusGroup({
 // ==================== Invalid-workspace surface (loud failure) ====================
 
 function InvalidWorkspaces({ workspaces }: { workspaces: IssueWorkspace[] }) {
+  const { t } = useTranslation()
   if (workspaces.length === 0) return null
   return (
     <div className="space-y-1.5">
       {workspaces.map((ws) => (
         <div
           key={ws.wsId}
-          className="rounded-lg border border-red-500/30 bg-red-500/[0.06] px-4 py-2.5 text-xs text-red-400"
+          className="rounded-lg border border-destructive/30 bg-destructive/[0.06] px-4 py-2.5 text-xs text-destructive"
         >
-          <span className="font-medium text-red-300">{ws.tag}</span>{' '}
-          <span className="font-mono text-red-400/70">{ws.wsId.slice(0, 8)}</span>
-          <p className="mt-1 leading-relaxed">{ws.error ?? 'issues are unreadable for this workspace'}</p>
+          <span className="font-medium text-destructive">{ws.tag}</span>{' '}
+          <span className="font-mono text-destructive/70">{ws.wsId.slice(0, 8)}</span>
+          <p className="mt-1 leading-relaxed">{ws.error ?? t('issues.unreadableWorkspace')}</p>
         </div>
       ))}
     </div>
@@ -382,6 +531,7 @@ function InvalidWorkspaces({ workspaces }: { workspaces: IssueWorkspace[] }) {
  * and nothing to create here (Phase 1).
  */
 export function IssuesBoard() {
+  const { t } = useTranslation()
   const { data, error, loading } = useIssues()
   const { agents, defaultAgent, issueDefaultAgent, workspaces: workspaceMetas } = useWorkspaces()
   const openOrFocus = useWorkspace((s) => s.openOrFocus)
@@ -405,7 +555,7 @@ export function IssuesBoard() {
   // flipping to a loading/error screen on a transient refresh failure.
   if (!data) {
     if (loading) return <CenteredLoading />
-    return <div className="text-sm text-red-400">Failed to load issues: {error}</div>
+    return <div className="text-sm text-destructive">{t('issues.loadError', { error: error ?? t('issues.unknownError') })}</div>
   }
 
   // Defensive: tolerate a malformed/empty payload (e.g. the demo catchAll's
@@ -452,12 +602,12 @@ export function IssuesBoard() {
 
   const groups = STATUS_ORDER.map((status) => ({
     status,
-    rows: rows.filter((r) => r.issue.status === status),
+    rows: rows.filter((r) => r.issue.status === status).sort(boardRowOrder),
   })).filter((g) => g.rows.length > 0)
 
   const staleBanner = error ? (
-    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-400">
-      Live refresh failing — showing the last known issues.
+    <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning">
+      {t('issues.stale')}
     </div>
   ) : null
 
@@ -466,14 +616,14 @@ export function IssuesBoard() {
       <div className="space-y-3">
         {staleBanner}
         <div className="rounded-lg border border-dashed border-border px-6 py-12 text-center">
-          <ListChecks size={24} className="mx-auto text-muted/50" />
-          <p className="mt-3 text-sm text-muted">No workspace has any issues yet.</p>
-          <p className="mt-1 text-xs text-muted/80">
-            A workspace tracks an issue by writing{' '}
-            <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono text-[11px] text-text/80">
+          <ListChecks size={24} className="mx-auto text-muted-foreground/50" />
+          <p className="mt-3 text-sm text-muted-foreground">{t('issues.emptyTitle')}</p>
+          <p className="mt-1 text-xs text-muted-foreground/80">
+            {t('issues.emptyPrefix')}{' '}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground/80">
               .alice/issues/&lt;id&gt;.md
             </code>
-            . Add a <span className="text-text">when</span> field and it self-schedules.
+            {t('issues.emptySuffixBeforeWhen')}<span className="text-foreground">when</span>{t('issues.emptySuffixAfterWhen')}
           </p>
         </div>
       </div>

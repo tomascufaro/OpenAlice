@@ -16,8 +16,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveCreateAgents, runScript } from './workspace-creator.js';
 
-vi.mock('node:child_process', () => ({
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
   spawn: vi.fn(),
+}));
+
+// Shell discovery has its own filesystem tests. Keep these spawn-shape tests
+// deterministic on Windows hosts that happen to have Git Bash installed.
+vi.mock('@/core/shell-resolver.js', () => ({
+  resolveBashPath: vi.fn(() => null),
 }));
 
 const mockSpawn = vi.mocked(childProcess.spawn);

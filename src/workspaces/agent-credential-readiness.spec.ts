@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { readCredentials, setCredentialLastModel, type Credential } from '@/core/config.js';
+import {
+  readCredentials,
+  setCredentialLastModel,
+  type Credential,
+} from '@/core/config.js';
 import type { CliAdapter, WorkspaceAiCred } from './cli-adapter.js';
 import {
   AgentCredentialError,
@@ -82,6 +86,28 @@ describe('agent credential readiness', () => {
     expect(a.writeAiConfig).not.toHaveBeenCalled();
   });
 
+  it('does not overwrite an explicit Workspace wire when Quick Chat repeats the same credential', async () => {
+    const a = adapter('pi', {
+      baseUrl: 'https://api.minimax.io/anthropic',
+      apiKey: 'sk-oa',
+      model: 'MiniMax-M3',
+      wireShape: 'anthropic',
+      authMode: 'bearer',
+      contextWindow: 512_000,
+    });
+    vi.mocked(readCredentials).mockResolvedValue({ 'openai-1': openaiKey });
+
+    const row = await ensureAgentCredentialReady({
+      meta,
+      agentId: 'pi',
+      adapter: a,
+      pickedCredentialSlug: 'openai-1',
+    });
+
+    expect(row.source).toBe('workspace-config');
+    expect(a.writeAiConfig).not.toHaveBeenCalled();
+  });
+
   it('injects a compatible vault credential when no usable workspace config exists', async () => {
     const a = adapter('pi', null);
     vi.mocked(readCredentials).mockResolvedValue({ 'openai-1': openaiKey });
@@ -98,11 +124,11 @@ describe('agent credential readiness', () => {
     expect(a.writeAiConfig).toHaveBeenCalledOnce();
     expect(a.writeAiConfig).toHaveBeenCalledWith('/tmp/ws-1', expect.objectContaining({
       apiKey: 'sk-oa',
-      model: 'gpt-5.5',
+      model: 'gpt-5.6',
       wireShape: 'openai-chat',
-      contextWindow: 1_000_000,
+      contextWindow: 1_050_000,
     }));
-    expect(vi.mocked(setCredentialLastModel)).toHaveBeenCalledWith('openai-1', 'gpt-5.5');
+    expect(vi.mocked(setCredentialLastModel)).toHaveBeenCalledWith('openai-1', 'gpt-5.6');
   });
 
   it('does not treat a custom credential without a remembered model as injectable', async () => {

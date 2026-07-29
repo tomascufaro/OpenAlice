@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Clock, Layers } from 'lucide-react'
+import { useWorkspaces } from '../contexts/workspaces-context'
 import { formatRelativeTime } from '../lib/intl'
 import { inboxLive } from '../live/inbox'
 import { useInboxRead } from '../live/inbox-read'
@@ -23,7 +24,7 @@ import type { InboxEntry } from '../api/inbox'
  * so clustering is a sidebar affordance, not a merge. Selecting a row
  * marks just that push read; j/k walks the currently-displayed order.
  */
-export function InboxSidebar() {
+export function InboxSidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
   const { t } = useTranslation()
   const entries = inboxLive.useStore((s) => s.entries)
   const loading = inboxLive.useStore((s) => s.loading)
@@ -31,8 +32,13 @@ export function InboxSidebar() {
   const select = useInboxSelection((s) => s.select)
   const markRead = useInboxRead((s) => s.markRead)
   const mode = useInboxViewMode((s) => s.mode)
+  const { workspaces } = useWorkspaces()
 
   const threads = useMemo(() => groupThreads(entries), [entries])
+  const workspaceLabels = useMemo(
+    () => new Map(workspaces.map((workspace) => [workspace.id, workspace.tag])),
+    [workspaces],
+  )
   const readIds = useMemo(() => {
     const ids: Record<string, true> = {}
     for (const entry of entries) {
@@ -52,6 +58,7 @@ export function InboxSidebar() {
   const selectAndRead = (id: string) => {
     select(id)
     markRead(id)
+    onNavigate?.()
   }
 
   // Default-select the first row on first non-empty load. Latch once.
@@ -95,9 +102,9 @@ export function InboxSidebar() {
 
   if (entries.length === 0) {
     return (
-      <div className="px-3 py-4 text-[12px] text-text-muted/70 leading-relaxed">
+      <div className="px-3 py-4 text-[12px] text-muted-foreground/70 leading-relaxed">
         {t('inbox.noMessages')}
-        <div className="mt-1 text-text-muted/50">
+        <div className="mt-1 text-muted-foreground/50">
           {t('inbox.emptyHint')}
         </div>
       </div>
@@ -111,6 +118,7 @@ export function InboxSidebar() {
           threads={threads}
           selectedId={selectedId}
           readIds={readIds}
+          workspaceLabels={workspaceLabels}
           onSelect={selectAndRead}
         />
       ) : (
@@ -118,6 +126,7 @@ export function InboxSidebar() {
           entries={entries}
           selectedId={selectedId}
           readIds={readIds}
+          workspaceLabels={workspaceLabels}
           onSelect={selectAndRead}
         />
       )}
@@ -168,7 +177,7 @@ function ToggleBtn({
       aria-label={title}
       aria-pressed={active}
       className={`flex items-center justify-center w-8 h-8 transition-colors ${
-        active ? 'bg-bg-tertiary text-text' : 'text-text-muted/60 hover:text-text hover:bg-bg-tertiary/50'
+        active ? 'bg-muted text-foreground' : 'text-muted-foreground/60 hover:text-foreground hover:bg-muted/50'
       }`}
     >
       {children}
@@ -179,30 +188,33 @@ function ToggleBtn({
 // ==================== Workspace (clustered) view ====================
 
 function WorkspaceView({
-  threads, selectedId, readIds, onSelect,
+  threads, selectedId, readIds, workspaceLabels, onSelect,
 }: {
   threads: ReturnType<typeof groupThreads>
   selectedId: string | null
   readIds: Record<string, true>
+  workspaceLabels: ReadonlyMap<string, string>
   onSelect: (id: string) => void
 }) {
   return (
     <>
       {threads.map((thread) => {
         const unread = thread.entries.reduce((n, e) => (readIds[e.id] ? n : n + 1), 0)
+        const workspaceLabel =
+          workspaceLabels.get(thread.workspaceId) ?? thread.workspaceLabel ?? thread.workspaceId
         return (
           <div key={thread.workspaceId} className="mb-1.5">
             {/* Cluster header: label · unread badge · latest time */}
             <div className="flex items-center gap-1.5 px-3 mt-1.5 mb-0.5">
-              <span className="flex-1 truncate text-[12px] font-medium text-text/90">
-                {thread.workspaceLabel ?? thread.workspaceId}
+              <span className="flex-1 truncate text-[12px] font-medium text-foreground/90">
+                {workspaceLabel}
               </span>
               {unread > 0 && (
-                <span className="shrink-0 min-w-[15px] h-[15px] px-1 rounded-full bg-accent text-bg text-[9px] font-semibold tabular-nums flex items-center justify-center">
+                <span className="shrink-0 min-w-[15px] h-[15px] px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-semibold tabular-nums flex items-center justify-center">
                   {unread}
                 </span>
               )}
-              <span className="shrink-0 text-[10px] text-text-muted/50 tabular-nums">
+              <span className="shrink-0 text-[10px] text-muted-foreground/50 tabular-nums">
                 {formatRelativeTime(thread.latestTs)}
               </span>
             </div>
@@ -247,21 +259,21 @@ function ClusterRow({
           onClick()
         }
       }}
-      className={`group relative grid min-h-11 grid-cols-[auto_minmax(0,1fr)] gap-x-1.5 gap-y-0.5 pl-3 pr-3 py-1.5 cursor-pointer transition-colors outline-none focus-visible:bg-bg-tertiary/70 ${
-        active ? 'bg-bg-tertiary' : 'hover:bg-bg-tertiary/50'
+      className={`group relative grid min-h-11 grid-cols-[auto_minmax(0,1fr)] gap-x-1.5 gap-y-0.5 pl-3 pr-3 py-1.5 cursor-pointer transition-colors outline-none focus-visible:bg-muted/70 ${
+        active ? 'bg-muted' : 'hover:bg-muted/50'
       }`}
     >
       {active && (
-        <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-accent" />
+        <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-primary" />
       )}
       <span
         aria-hidden
-        className={`mt-[7px] shrink-0 w-1.5 h-1.5 rounded-full ${unread ? 'bg-accent' : 'bg-transparent'}`}
+        className={`mt-[7px] shrink-0 w-1.5 h-1.5 rounded-full ${unread ? 'bg-primary' : 'bg-transparent'}`}
       />
-      <span className={`min-w-0 truncate text-[11px] leading-5 ${unread ? 'text-text-muted' : 'text-text-muted/70'}`}>
+      <span className={`min-w-0 truncate text-[11px] leading-5 ${unread ? 'text-muted-foreground' : 'text-muted-foreground/70'}`}>
         {previewForEntry(entry)}
       </span>
-      <span className="col-start-2 text-[10px] text-text-muted/50 tabular-nums">
+      <span className="col-start-2 text-[10px] text-muted-foreground/50 tabular-nums">
         {formatRelativeTime(entry.ts)}
       </span>
     </div>
@@ -271,11 +283,12 @@ function ClusterRow({
 // ==================== Time (flat chronological) view ====================
 
 function TimeView({
-  entries, selectedId, readIds, onSelect,
+  entries, selectedId, readIds, workspaceLabels, onSelect,
 }: {
   entries: readonly InboxEntry[]
   selectedId: string | null
   readIds: Record<string, true>
+  workspaceLabels: ReadonlyMap<string, string>
   onSelect: (id: string) => void
 }) {
   const { t } = useTranslation()
@@ -285,7 +298,7 @@ function TimeView({
     <>
       {groups.map(([bucket, items]) => (
         <div key={bucket} className="mb-1">
-          <div className="px-3 mt-2 mb-1 text-[10px] font-medium text-text-muted/60 uppercase tracking-wider">
+          <div className="px-3 mt-2 mb-1 text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wider">
             {t(BUCKET_KEYS[bucket])}
           </div>
           <div className="flex flex-col">
@@ -295,6 +308,7 @@ function TimeView({
                 entry={entry}
                 active={entry.id === selectedId}
                 unread={!readIds[entry.id]}
+                workspaceLabel={workspaceLabels.get(entry.workspaceId)}
                 onClick={() => onSelect(entry.id)}
               />
             ))}
@@ -308,11 +322,12 @@ function TimeView({
 /** Row in the flat time feed — carries the workspace label (no cluster
  *  header to provide it). */
 function TimeRow({
-  entry, active, unread, onClick,
+  entry, active, unread, workspaceLabel, onClick,
 }: {
   entry: InboxEntry
   active: boolean
   unread: boolean
+  workspaceLabel?: string
   onClick: () => void
 }) {
   return (
@@ -326,30 +341,30 @@ function TimeRow({
           onClick()
         }
       }}
-      className={`group relative flex min-h-14 flex-col gap-0.5 px-3 py-2 cursor-pointer transition-colors outline-none focus-visible:bg-bg-tertiary/70 ${
-        active ? 'bg-bg-tertiary' : 'hover:bg-bg-tertiary/50'
+      className={`group relative flex min-h-14 flex-col gap-0.5 px-3 py-2 cursor-pointer transition-colors outline-none focus-visible:bg-muted/70 ${
+        active ? 'bg-muted' : 'hover:bg-muted/50'
       }`}
     >
       {active && (
-        <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-accent" />
+        <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-primary" />
       )}
 
       {/* Line 1: unread dot · workspace · time */}
       <div className="flex items-center gap-1.5">
         <span
           aria-hidden
-          className={`shrink-0 w-1.5 h-1.5 rounded-full ${unread ? 'bg-accent' : 'bg-transparent'}`}
+          className={`shrink-0 w-1.5 h-1.5 rounded-full ${unread ? 'bg-primary' : 'bg-transparent'}`}
         />
-        <span className={`flex-1 truncate text-[12px] ${unread ? 'font-medium text-text' : 'text-text'}`}>
-          {entry.workspaceLabel ?? entry.workspaceId}
+        <span className={`flex-1 truncate text-[12px] ${unread ? 'font-medium text-foreground' : 'text-foreground'}`}>
+          {workspaceLabel ?? entry.workspaceLabel ?? entry.workspaceId}
         </span>
-        <span className="shrink-0 text-[10px] text-text-muted/60 tabular-nums">
+        <span className="shrink-0 text-[10px] text-muted-foreground/60 tabular-nums">
           {formatRelativeTime(entry.ts)}
         </span>
       </div>
 
       {/* Line 2: preview */}
-      <div className={`pl-3 text-[11px] truncate ${unread ? 'text-text-muted' : 'text-text-muted/70'}`}>
+      <div className={`pl-3 text-[11px] truncate ${unread ? 'text-muted-foreground' : 'text-muted-foreground/70'}`}>
         {previewForEntry(entry)}
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { type AssetClass, type BarSourceCandidate } from '../api/market'
 import { useAssetSearch } from './market/useAssetSearch'
@@ -10,16 +10,16 @@ import { SidebarSectionHeader } from './SidebarSectionHeader'
 import { Spinner } from './StateViews'
 
 const ASSET_CLASS_COLORS: Record<string, string> = {
-  equity: 'bg-accent/15 text-accent',
-  crypto: 'bg-amber-500/15 text-amber-400',
-  currency: 'bg-green/15 text-green',
-  commodity: 'bg-purple-500/15 text-purple-400',
-  unknown: 'bg-bg-tertiary text-text-muted',
+  equity: 'bg-primary/15 text-primary',
+  crypto: 'bg-warning/15 text-warning',
+  currency: 'bg-success/15 text-success',
+  commodity: 'bg-ai-action/15 text-ai-action',
+  unknown: 'bg-muted text-muted-foreground',
 }
 
 const CAPABILITY_COLOR: Record<string, string> = {
-  realtime: 'text-green', iex: 'text-accent', delayed: 'text-text-muted/70',
-  subscription: 'text-amber-400', free: 'text-text-muted/70',
+  realtime: 'text-success', iex: 'text-primary', delayed: 'text-muted-foreground',
+  subscription: 'text-warning', free: 'text-muted-foreground',
 }
 
 /** A crypto venue's "AAPL" is synthetic — the route segment still needs a valid
@@ -42,6 +42,11 @@ export function MarketSidebar() {
   const [query, setQuery] = useState('')
   // Shared with the main search box — one search logic, no drift.
   const { results, loading } = useAssetSearch(query)
+  const [highlight, setHighlight] = useState(0)
+
+  useEffect(() => {
+    setHighlight(0)
+  }, [results])
 
   const watchlist = useWatchlist((s) => s.entries)
   const removeFromWatchlist = useWatchlist((s) => s.remove)
@@ -61,6 +66,26 @@ export function MarketSidebar() {
     openOrFocus({ kind: 'market-detail', params: { assetClass: routeAssetClass(c.assetClass), symbol: c.symbol, source: c.barId } })
   }
 
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') {
+      if (!query) return
+      event.preventDefault()
+      setQuery('')
+      return
+    }
+    if (loading || results.length === 0) return
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setHighlight((current) => Math.min(current + 1, results.length - 1))
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setHighlight((current) => Math.max(current - 1, 0))
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      handleSelectResult(results[highlight])
+    }
+  }
+
   return (
     <div className="flex flex-col gap-3 h-full overflow-hidden">
       {/* Search box */}
@@ -69,8 +94,10 @@ export function MarketSidebar() {
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={handleSearchKeyDown}
           placeholder={t('market.searchPlaceholder')}
-          className="w-full px-2.5 py-1.5 bg-bg text-text border border-border/70 rounded-md text-[13px] outline-none focus:border-accent"
+          aria-label={t('market.searchPlaceholder')}
+          className="w-full px-2.5 py-1.5 bg-background text-foreground border border-border/70 rounded-md text-[13px] outline-none focus:border-primary"
         />
       </div>
 
@@ -134,27 +161,33 @@ export function MarketSidebar() {
               {t('market.searchResults')}{loading ? ` (${t('common.searching')})` : results.length ? ` (${results.length})` : ''}
             </SidebarSectionHeader>
             {loading && (
-              <div className="px-3 py-2 flex items-center gap-2 text-[12px] text-text-muted/60">
+              <div className="flex items-center gap-2 px-3 py-2 text-[12px] text-muted-foreground">
                 <Spinner size="sm" />
                 <span>{t('common.searching')}</span>
               </div>
             )}
             {!loading && results.length === 0 && (
-              <p className="px-3 py-2 text-[12px] text-text-muted/70 leading-relaxed">{t('market.noMatches')}</p>
+              <p className="px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">{t('market.noMatches')}</p>
             )}
-            {results.map((c) => (
-              <SidebarRow
+            {results.map((c, index) => (
+              <div
                 key={c.barId}
-                label={
-                  <span className="flex items-center gap-1.5 min-w-0">
-                    <span className="font-mono font-semibold shrink-0">{c.symbol}</span>
-                    {c.name && <span className="text-text-muted truncate">{c.name}</span>}
-                  </span>
-                }
-                active={isFocusedDetail(routeAssetClass(c.assetClass), c.symbol, c.barId)}
-                onClick={() => handleSelectResult(c)}
-                trail={<SourceTrail c={c} />}
-              />
+                data-keyboard-highlighted={index === highlight ? 'true' : 'false'}
+                onMouseEnter={() => setHighlight(index)}
+                className={index === highlight ? 'bg-muted/70' : undefined}
+              >
+                <SidebarRow
+                  label={
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span className="font-mono font-semibold shrink-0">{c.symbol}</span>
+                      {c.name && <span className="text-muted-foreground truncate">{c.name}</span>}
+                    </span>
+                  }
+                  active={isFocusedDetail(routeAssetClass(c.assetClass), c.symbol, c.barId)}
+                  onClick={() => handleSelectResult(c)}
+                  trail={<SourceTrail c={c} />}
+                />
+              </div>
             ))}
           </>
         )}
@@ -162,7 +195,7 @@ export function MarketSidebar() {
         {/* Watchlist */}
         <SidebarSectionHeader>{t('market.watchlist')}{watchlist.length ? ` (${watchlist.length})` : ''}</SidebarSectionHeader>
         {watchlist.length === 0 ? (
-          <p className="px-3 py-2 text-[12px] text-text-muted/70 leading-relaxed">
+          <p className="px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
             {t('market.emptyWatchlistHint')}
           </p>
         ) : (
@@ -186,7 +219,7 @@ export function MarketSidebar() {
                       e.stopPropagation()
                       removeFromWatchlist(entry.assetClass, entry.symbol)
                     }}
-                    className="w-4 h-4 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 text-text-muted/60 hover:text-text hover:bg-bg-tertiary"
+                    className="flex h-4 w-4 items-center justify-center rounded text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100"
                     aria-label={t('market.removeFromWatchlist', { symbol: entry.symbol })}
                   >
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -218,11 +251,10 @@ function SourceTrail({ c }: { c: BarSourceCandidate }) {
   // crushed. (Asset class is shown in the wider main search box, not here.)
   return (
     <span className="flex items-center gap-1 shrink-0" title={`${c.barId}${c.barCapability ? ` · ${c.barCapability}` : ''}`}>
-      <span className="text-[10px] text-text/75 font-medium truncate max-w-[96px]">{c.sourceId}</span>
+      <span className="text-[10px] text-foreground/75 font-medium truncate max-w-[96px]">{c.sourceId}</span>
       {c.barCapability && (
-        <span className={`text-[9px] ${CAPABILITY_COLOR[c.barCapability] ?? 'text-text-muted'}`}>{c.barCapability}</span>
+        <span className={`text-[9px] ${CAPABILITY_COLOR[c.barCapability] ?? 'text-muted-foreground'}`}>{c.barCapability}</span>
       )}
     </span>
   )
 }
-

@@ -92,9 +92,10 @@ There is no Postgres or Redis to provision. Config, sessions, issues, inbox entr
 
 Pick the run path that matches your machine:
 
-- **macOS** - use the signed Apple Silicon desktop build: [macOS install](https://openalice.ai/docs/getting-started/install-macos).
-- **Windows** - run from source today: [Windows install](https://openalice.ai/docs/getting-started/install-windows).
-- **Linux, Intel Mac, contributors, debugging** - use the source path: [Source & Dev](https://openalice.ai/docs/getting-started/developer-setup).
+- **macOS** - use the signed Apple Silicon or Intel desktop build: [macOS install](https://openalice.ai/docs/getting-started/install-macos).
+- **Windows** - choose the self-contained unsigned desktop beta or the source path: [Windows install](https://openalice.ai/docs/getting-started/install-windows).
+- **Linux, contributors, debugging** - use the source path: [Source & Dev](https://openalice.ai/docs/getting-started/developer-setup).
+- **Private SSH host or travel setup** - keep the browser local and run the Runtime remotely: [Remote quickstart](docs/remote-quickstart.md).
 - **Server or always-on machine** - use Docker Compose: [Docker deployment](https://openalice.ai/docs/deployment/docker).
 
 The source path is still the best early-adopter path because it gives you logs and local code:
@@ -108,7 +109,11 @@ pnpm dev
 
 Open the UI URL printed by the terminal, usually `http://localhost:5173`.
 
-You also need at least one agent CLI installed and logged in, usually `claude` or `codex`. OpenAlice runs the model loop inside that native CLI so you keep its prompt cache, terminal rendering, provider login, and tool behavior.
+The packaged desktop includes managed Pi; the Docker image pins Claude Code,
+Codex, opencode, and Pi. Both still need a model credential or supported CLI
+login. Source installs need at least one host agent CLI. OpenAlice runs the
+model loop inside that native runtime so you keep its conversation state,
+provider login, and tool behavior.
 
 ## Documentation
 
@@ -118,8 +123,9 @@ The README is intentionally short. The real docs live at [openalice.ai/docs](htt
 - [Quick Start](https://openalice.ai/docs/getting-started/quick-start) - your first research, tracking, issue, schedule, and Inbox loop.
 - [Installation Overview](https://openalice.ai/docs/getting-started/installation) - choose macOS, Windows, source, Docker, or remote access.
 - [Workspaces](https://openalice.ai/docs/workspaces/workspaces) - the directory, git, CLI, and file-backed substrate.
+- [Sessions & Collaboration](https://openalice.ai/docs/workspaces/sessions-and-collaboration) - durable Session identity, signatures, provenance, and attributable follow-up.
+- [Lifecycle & Offboarding](https://openalice.ai/docs/workspaces/lifecycle) - handoff, departed desks, restore, purge, and Session retirement.
 - [Workspace Automation](https://openalice.ai/docs/workspaces/automation) - scheduled runs through self-describing issues.
-- [Workspace Webhook](https://openalice.ai/docs/workspaces/webhook) - trigger OpenAlice from outside systems.
 - [Unified Trading Account](https://openalice.ai/docs/core-concepts/unified-trading-account) - the beta account layer and safety warnings.
 - [Trading as Git](https://openalice.ai/docs/core-concepts/trading-as-git) - staged, committed, approval-gated trading operations.
 - [Data & Credentials](https://openalice.ai/docs/deployment/data-and-credentials) - state layout, sealed credentials, ports, and backup.
@@ -141,7 +147,18 @@ Stuck? The fastest path is usually:
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=TraderAlice/OpenAlice&type=Date)](https://star-history.com/#TraderAlice/OpenAlice&Date)
+<p align="center">
+  <a href="https://github.com/TraderAlice/OpenAlice">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/images/star-history-dark.svg">
+      <img src="docs/images/star-history.svg" alt="OpenAlice GitHub star history" width="900">
+    </picture>
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/TraderAlice/OpenAlice"><img src="https://img.shields.io/github/stars/TraderAlice/OpenAlice?style=flat-square&logo=github&label=Current%20stars" alt="Current GitHub stars"></a>
+</p>
 
 ## Contributors
 
@@ -159,6 +176,7 @@ suggestion, or implementation proposal changes the product, it gets credited.
   <a href="https://github.com/JasonWang1124"><img src="https://github.com/JasonWang1124.png" width="56" height="56" alt="@JasonWang1124" /></a>
   <a href="https://github.com/bakabird"><img src="https://github.com/bakabird.png" width="56" height="56" alt="@bakabird" /></a>
   <a href="https://github.com/rudyll"><img src="https://github.com/rudyll.png" width="56" height="56" alt="@rudyll" /></a>
+  <a href="https://github.com/jalilsedna"><img src="https://github.com/jalilsedna.png" width="56" height="56" alt="@jalilsedna" /></a>
 </p>
 
 **See the full list and what each person shaped**: [CONTRIBUTORS.md](./CONTRIBUTORS.md)

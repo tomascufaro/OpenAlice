@@ -16,15 +16,15 @@
  * keeps running on the server. Use the sidebar's × to actually delete.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { useEffect } from 'react'
+import { Bot, Monitor } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import '@xterm/xterm/css/xterm.css'
 
 import { useWorkspaces } from '../contexts/workspaces-context'
 import { useWorkspace } from '../tabs/store'
 import { WorkspaceView } from '../components/workspace/WorkspaceView'
 import { WorkspaceFilesToggle } from '../components/workspace/WorkspaceFilesToggle'
-import { keyMapForAgent } from '../components/workspace/terminalInput'
 import type { ViewSpec } from '../tabs/types'
 
 interface Props {
@@ -33,6 +33,7 @@ interface Props {
 }
 
 export function WorkspacePage({ spec, visible }: Props) {
+  const { t } = useTranslation()
   const ctx = useWorkspaces()
   const openOrFocus = useWorkspace((s) => s.openOrFocus)
   const wsId = spec.params.wsId
@@ -44,38 +45,22 @@ export function WorkspacePage({ spec, visible }: Props) {
   const activeRecord = sessionId
     ? sessions.find((s) => s.id === sessionId) ?? null
     : null
-  const keyMap = keyMapForAgent(activeRecord?.agent)
-  const [spawnMenuOpen, setSpawnMenuOpen] = useState(false)
-  const spawnMenuRef = useRef<HTMLDivElement | null>(null)
-  const runtimeAgents = useMemo(() => {
-    if (!workspace) return []
-    return workspace.agents
-      .map((id) => ctx.agents.find((a) => a.id === id))
-      .filter((a): a is NonNullable<typeof a> => !!a && a.kind !== 'utility')
-  }, [ctx.agents, workspace])
-  const utilityAgents = useMemo(() => {
-    if (!workspace) return []
-    return workspace.agents
-      .map((id) => ctx.agents.find((a) => a.id === id))
-      .filter((a): a is NonNullable<typeof a> => !!a && a.kind === 'utility')
-  }, [ctx.agents, workspace])
   const defaultAgentEnabled =
     ctx.defaultAgent !== null &&
     workspace?.agents.includes(ctx.defaultAgent) === true &&
-    runtimeAgents.some((a) => a.id === ctx.defaultAgent)
-
-  const spawnWithAgent = async (agentId: string, saveDefault: boolean): Promise<void> => {
-    setSpawnMenuOpen(false)
-    if (saveDefault) await ctx.setDefaultAgent(agentId)
-    await ctx.spawn(wsId, { agent: agentId }, source)
-  }
+    ctx.agents.some((a) => a.id === ctx.defaultAgent && a.kind !== 'utility')
 
   const spawnDefault = (): void => {
     if (defaultAgentEnabled && ctx.defaultAgent) {
       void ctx.spawn(wsId, { agent: ctx.defaultAgent }, source)
       return
     }
-    setSpawnMenuOpen((v) => !v)
+    // The old header dropdown duplicated the global New chat flow and left a
+    // second, stale session-creation surface in every Workspace. When no
+    // default runtime is configured, take the remaining empty-state/shortcut
+    // entry points to the targeted composer, which owns runtime + credential
+    // selection.
+    openOrFocus({ kind: 'chat-landing', params: { targetWsId: wsId } })
   }
 
   // Cmd+T / Ctrl+T: spawn fresh session in this workspace; only when this
@@ -95,28 +80,10 @@ export function WorkspacePage({ spec, visible }: Props) {
     return () => document.removeEventListener('keydown', handler, { capture: true })
   }, [visible, ctx, wsId, defaultAgentEnabled])
 
-  useEffect(() => {
-    if (!spawnMenuOpen) return
-    const onDocClick = (e: MouseEvent): void => {
-      if (spawnMenuRef.current?.contains(e.target as Node)) return
-      setSpawnMenuOpen(false)
-    }
-    const onEsc = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setSpawnMenuOpen(false)
-    }
-    const tid = setTimeout(() => document.addEventListener('click', onDocClick), 0)
-    document.addEventListener('keydown', onEsc)
-    return () => {
-      clearTimeout(tid)
-      document.removeEventListener('click', onDocClick)
-      document.removeEventListener('keydown', onEsc)
-    }
-  }, [spawnMenuOpen])
-
   if (!workspace) {
     return (
-      <div className="workspaces-root flex flex-col items-center justify-center h-full text-text-muted text-sm">
-        Workspace not found. It may have been deleted.
+      <div className="workspaces-root flex flex-col items-center justify-center h-full text-muted-foreground text-sm">
+        {t('workspace.notFound')}
       </div>
     )
   }
@@ -127,77 +94,59 @@ export function WorkspacePage({ spec, visible }: Props) {
   // holds for the active path); when sessionId is null, the empty
   // state needs the full list to render resume/continue cards.
   return (
-    <div className="workspaces-root flex-1 min-h-0 flex flex-col">
+    <div className="workspaces-root workspace-page-shell flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* OpenAlice-side header bar above the launcher's WorkspaceView. The
        *  launcher component itself is byte-faithful; we add the AI-provider
        *  affordance here. */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-bg-secondary/30 shrink-0">
-        <span className="text-[12px] text-text-muted font-medium">{workspace.tag}</span>
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-secondary/30 shrink-0">
+        <span className="text-[12px] text-muted-foreground font-medium">{workspace.tag}</span>
         <div className="flex items-center gap-1">
-          <div ref={spawnMenuRef} className="relative">
+          {activeRecord?.agent === 'pi' && activeRecord.state === 'running' && (
             <button
               type="button"
-              onClick={spawnDefault}
-              className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] text-text-muted hover:text-text hover:bg-bg-tertiary transition-colors"
-              title="Spawn a fresh session in this workspace (⌘T)"
+              onClick={() => {
+                if ((activeRecord.surface ?? 'terminal') === 'webpi') {
+                  void ctx.resumeSession(wsId, activeRecord.id, source)
+                } else {
+                  void ctx.openWebPiSession(wsId, activeRecord.id, source)
+                }
+              }}
+              className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              title={(activeRecord.surface ?? 'terminal') === 'webpi' ? 'Open this Pi Session in the terminal' : 'Open this Pi Session in WebPi'}
             >
-              <Plus size={13} strokeWidth={2.25} aria-hidden="true" />
-              New session
+              {(activeRecord.surface ?? 'terminal') === 'webpi'
+                ? <Monitor size={13} strokeWidth={2.25} aria-hidden="true" />
+                : <Bot size={13} strokeWidth={2.25} aria-hidden="true" />}
+              {(activeRecord.surface ?? 'terminal') === 'webpi' ? 'Open TUI' : 'WebPi · Beta'}
             </button>
-            {spawnMenuOpen && (
-              <div className="absolute right-0 top-full mt-1 w-44 rounded-md border border-border bg-bg-secondary shadow-lg py-1 z-20">
-                {runtimeAgents.map((agent) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    onClick={() => void spawnWithAgent(agent.id, true)}
-                    className="w-full px-3 py-1.5 text-left text-[12px] text-text-muted hover:text-text hover:bg-bg-tertiary"
-                  >
-                    {agent.displayName}
-                  </button>
-                ))}
-                {utilityAgents.length > 0 && runtimeAgents.length > 0 && (
-                  <div className="my-1 border-t border-border" />
-                )}
-                {utilityAgents.map((agent) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    onClick={() => void spawnWithAgent(agent.id, false)}
-                    className="w-full px-3 py-1.5 text-left text-[12px] text-text-muted hover:text-text hover:bg-bg-tertiary"
-                  >
-                    {agent.displayName}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          )}
           <WorkspaceFilesToggle />
           <button
             type="button"
             onClick={() => ctx.openAgentConfig(wsId)}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] text-text-muted hover:text-text hover:bg-bg-tertiary transition-colors"
-            title="Configure this workspace"
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            title={t('workspace.configure')}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
-            Settings
+            {t('workspace.settings')}
           </button>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col p-3">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col p-3">
         <WorkspaceView
           wsId={wsId}
           sessionId={sessionId}
+          {...(source ? { source } : {})}
           activeRecord={activeRecord}
           sessions={workspace.sessions}
           label={workspace.tag}
-          keyMap={keyMap}
           onSpawnFresh={spawnDefault}
           onResume={(id) => void ctx.resumeSession(wsId, id, source)}
+          onOpenWebPi={(id) => void ctx.openWebPiSession(wsId, id, source)}
           onSelectSession={(id) => {
             // Running session — already alive on the server, just
             // navigate. Mirrors the sidebar's onSelectSession path.

@@ -1,24 +1,18 @@
+import { useTranslation } from 'react-i18next'
+
 import { PageHeader } from '../components/PageHeader'
 import type { ViewSpec } from '../tabs/types'
 import { AutomationApiSection } from './AutomationApiSection'
-import { AutomationFlowSection } from './AutomationFlowSection'
 import { AutomationRunsSection } from './AutomationRunsSection'
-import { AutomationWebhookSection } from './AutomationWebhookSection'
 
 type AutomationSection = Extract<ViewSpec, { kind: 'automation' }>['params']['section']
 
-const SECTION_TITLE: Record<AutomationSection, string> = {
-  runs: 'Runs',
-  api: 'API',
-  flow: 'Flow',
-  webhook: 'Webhook',
-}
-
-const SECTION_DESCRIPTION: Record<AutomationSection, string> = {
-  runs: 'Headless agent runs across workspaces — what the workers are doing.',
-  api: 'Trigger workspace automation from outside, and the schedule-file format.',
-  flow: 'Producer-listener graph for the event bus.',
-  webhook: 'External HTTP triggers routed into the engine.',
+const SECTION_DESCRIPTION_KEY: Record<
+  AutomationSection,
+  'automation.runsDescription' | 'automation.apiDescription'
+> = {
+  runs: 'automation.runsDescription',
+  api: 'automation.apiDescription',
 }
 
 interface AutomationPageProps {
@@ -28,24 +22,26 @@ interface AutomationPageProps {
 /**
  * Automation page is sub-section-driven — `spec.params.section` picks which
  * surface renders. The Automation sidebar holds one row per section so each
- * section is its own tab in the editor area. Flow + Webhook are the old
- * event-bus surfaces, demoted under the sidebar's collapsed "Legacy" group.
- * (Schedules were absorbed into the Issue board — scheduled issues live there.)
+ * section is its own tab in the editor area. Schedules live on self-described
+ * Workspace issues; the retired event-bus surfaces are intentionally absent.
  */
 export function AutomationPage({ spec }: AutomationPageProps) {
+  const { t } = useTranslation()
   const section = spec.params.section
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <PageHeader title={SECTION_TITLE[section]} description={SECTION_DESCRIPTION[section]} />
-      <div className="flex-1 flex flex-col min-h-0 px-4 md:px-6 py-5">
+      <PageHeader
+        title={t(section === 'runs' ? 'automation.runs' : 'automation.api')}
+        description={t(SECTION_DESCRIPTION_KEY[section])}
+      />
+      <div
+        data-testid="automation-scroll-region"
+        className="flex-1 flex flex-col min-h-0 overflow-y-auto px-4 md:px-6 py-5"
+      >
         <div className="flex-1 min-h-0">
           {section === 'api' ? (
             <AutomationApiSection />
-          ) : section === 'flow' ? (
-            <AutomationFlowSection />
-          ) : section === 'webhook' ? (
-            <AutomationWebhookSection />
           ) : (
             <AutomationRunsSection />
           )}

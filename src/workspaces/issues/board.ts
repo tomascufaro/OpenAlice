@@ -7,17 +7,33 @@
  * shows ALL issues (scheduled or not); a scheduled issue additionally carries its
  * firing markers (`lastFiredAtMs` / `nextDueAtMs`) so the row matches real firing.
  *
- * Phase 1 is read-only and the list view does NOT include the markdown body — the
+ * Phase 1 is read-only and the list view does NOT include markdown What — the
  * Phase 2 detail view loads it. Keeping the body out keeps the poll payload small.
  */
 
 import type { InboxEntry } from '../../core/inbox-store.js'
+import type { ModelReasoningEffort } from '../../ai-providers/model-semantics.js'
+import {
+  ACTIVITY_UPDATE_COALESCE_MS,
+  artifactOriginsMatch,
+  type ProvenanceMutation,
+  type ArtifactOrigin,
+  type ProvenanceAction,
+  type ProvenanceRecord,
+} from '../../core/provenance-store.js'
 import type { Schedule } from '../../core/schedule-expr.js'
-import type { HeadlessTaskRecord } from '../headless-task-registry.js'
+import type {
+  HeadlessTaskOutputSummary,
+  HeadlessTaskRecord,
+  HeadlessTaskStatus,
+} from '../headless-task-registry.js'
 import type { IssuePriority, IssueRecord, IssueStatus } from './declaration.js'
+import type { IssueComment } from './comments.js'
+import type { IssueAutomationHealth } from './automation-health.js'
+import { issueRunFailure, type IssueRunFailure } from './run-failure.js'
 
 /** One board row: the issue's display fields, plus — iff it self-schedules — its
- *  `when` and the scanner's firing markers. No markdown body (Phase 2 loads it). */
+ *  `when` and the scanner's firing markers. No markdown What (Phase 2 loads it). */
 export interface IssuesSnapshotIssue {
   id: string
   title: string
@@ -26,12 +42,16 @@ export interface IssuesSnapshotIssue {
   assignee: string
   /** Adapter id for the scheduled fire (frontmatter `agent`), if set. */
   agent?: string
+  model?: string
+  effort?: ModelReasoningEffort
   /** Present iff the issue self-schedules. */
   when?: Schedule
   /** When the scanner last fired this issue (epoch ms); only for scheduled issues. */
   lastFiredAtMs?: number | null
   /** When it is next due (epoch ms); only for scheduled issues. */
   nextDueAtMs?: number | null
+  /** Live scheduler/worker health; present iff the Issue has a schedule. */
+  automationHealth?: IssueAutomationHealth
   /** True iff this issue's NAME (title, case-insensitive) is also used by an
    *  issue in a DIFFERENT workspace. A name is a global team object, so a clash
    *  across workspaces is ambiguous and the UI warns on it. DETECTION ONLY — we
@@ -121,8 +141,12 @@ export interface BoardRow {
   assignee: string
   /** Adapter id for the scheduled fire override, if set. */
   agent?: string
+  model?: string
+  effort?: ModelReasoningEffort
   /** True iff the issue self-schedules (snapshot `when` present). */
   scheduled: boolean
+  /** Live scheduler/worker health for scheduled rows. */
+  automationHealth?: IssueAutomationHealth
   workspace: { wsId: string; tag: string }
   /** Present (true) iff this title clashes across workspaces — carried from
    *  the snapshot's `annotateNameCollisions`. Absent ⇒ unique. */
@@ -159,7 +183,10 @@ export function flattenBoardRows(snapshot: IssuesSnapshot): {
         priority: issue.priority,
         assignee: issue.assignee,
         ...(issue.agent ? { agent: issue.agent } : {}),
+        ...(issue.model ? { model: issue.model } : {}),
+        ...(issue.effort ? { effort: issue.effort } : {}),
         scheduled: issue.when !== undefined,
+        ...(issue.automationHealth ? { automationHealth: issue.automationHealth } : {}),
         workspace: { wsId: ws.wsId, tag: ws.tag },
         ...(issue.nameCollision ? { nameCollision: true } : {}),
       })
@@ -184,99 +211,242 @@ export interface WikilinkIssueRef {
 export interface IssueFiringMarkers {
   lastFiredAtMs: number | null
   nextDueAtMs: number | null
+  automationHealth: IssueAutomationHealth
 }
 
 // ==================== Detail (Phase 2a) ====================
 // The read-only shape GET /api/issues/:wsId/:id returns: one issue's full
-// fields INCLUDING the markdown body and (iff scheduled) its firing markers +
-// scheduling frontmatter, plus that issue's headless run history (its Activity
-// feed). Unlike the board list, the detail loads the body and the runs.
+// fields INCLUDING markdown What and (iff scheduled) its firing markers +
+// scheduling frontmatter, its collaboration Activity, and its independent
+// headless run history. Unlike the board list, the detail loads all three.
 
-/** One issue's full detail fields: the board row's fields + the markdown body +
- *  the scheduling frontmatter (`what`/`agent`). Markers are present iff scheduled. */
+/** One issue's full detail fields: the board row's fields + the canonical
+ * markdown What. Markers are present iff scheduled. */
 export interface IssueDetailIssue {
   id: string
   title: string
-  /** Markdown description body (the list view omits this; the detail loads it). */
-  body: string
+  /** Canonical markdown work definition and exact scheduled prompt. */
+  what: string
   status: IssueStatus
   priority: IssuePriority
   assignee: string
   /** Present iff the issue self-schedules. */
   when?: Schedule
-  /** Scheduled fire prompt override (frontmatter `what`), if set. */
-  what?: string
   /** Adapter id for the scheduled fire (frontmatter `agent`), if set. */
   agent?: string
   /** When the scanner last fired this issue (epoch ms); only for scheduled issues. */
   lastFiredAtMs?: number | null
   /** When it is next due (epoch ms); only for scheduled issues. */
   nextDueAtMs?: number | null
+  /** Live scheduler/worker health; present iff the Issue has a schedule. */
+  automationHealth?: IssueAutomationHealth
 }
 
-/** GET /api/issues/:wsId/:id — one issue + its run history (Activity feed) +
- *  the inbox reports it produced. */
+/** GET /api/issues/:wsId/:id — one issue + its human-facing Activity timeline,
+ *  operational run history, and the inbox reports it produced. */
 export interface IssueDetail {
   issue: IssueDetailIssue
-  /** This issue's headless runs (wsId + issueId match), newest first. */
-  runs: HeadlessTaskRecord[]
+  /** Structured markdown comments loaded from the adjacent JSON sidecar. */
+  comments: IssueComment[]
+  /** This issue's headless runs (wsId + issueId match), newest first.
+   *  Runtime-native session ids are deliberately not part of this projection. */
+  runs: IssueRunRecord[]
   /** Inbox reports this issue produced — entries whose server-stamped
    *  `origin.issueId` is this issue, newest-first. The issue→inbox direction of
    *  the cross-link (`runs` is the run→issue one). */
   inboxReports: InboxEntry[]
+  /** Human-readable attribution activity for this Issue, newest first. Nearby
+   *  updates from one origin are one editing activity rather than autosave spam.
+   *  `resumeId` is the only conversation handle exposed for Session origins. */
+  provenance: IssueProvenanceRecord[]
+  /** Human-facing timeline: changes and comments, oldest first. Operational
+   * executions stay in `runs` so they do not swallow the collaboration log. */
+  activity: IssueActivityRecord[]
+}
+
+export interface IssueProvenanceRecord {
+  id: string
+  action: ProvenanceAction
+  origin: ArtifactOrigin
+  at: number
+  mutation?: ProvenanceMutation
+}
+
+export type IssueActivityRecord =
+  | ({ kind: 'change' } & IssueProvenanceRecord)
+  | { kind: 'comment'; id: string; at: number; comment: IssueComment }
+
+/** Strip persistence-only artifact/fingerprint fields from Issue detail. */
+export function issueProvenanceRecords(
+  records: readonly ProvenanceRecord[],
+): IssueProvenanceRecord[] {
+  const sorted = [...records].sort((a, b) => b.at - a.at)
+  const compacted: ProvenanceRecord[] = []
+  for (const record of sorted) {
+    const newer = compacted.at(-1)
+    const elapsed = newer ? newer.at - record.at : -1
+    if (
+      newer &&
+      newer.action === 'updated' && record.action === 'updated' &&
+      artifactOriginsMatch(newer.origin, record.origin) &&
+      elapsed >= 0 && elapsed <= ACTIVITY_UPDATE_COALESCE_MS
+    ) continue
+    compacted.push(record)
+  }
+  return compacted.map(({ id, action, origin, at, mutation }) => ({
+    id,
+    action,
+    origin,
+    at,
+    ...(mutation ? { mutation } : {}),
+  }))
+}
+
+/** Agent/UI-safe projection of one execution. `resumeId` is the only public
+ * conversation handle; adapter-native session ids stay in ResumeRegistry. */
+export interface IssueRunRecord {
+  taskId: string
+  resumeId: string
+  parentTaskId?: string
+  wsId: string
+  issueId?: string
+  agent: string
+  model?: string
+  effort?: ModelReasoningEffort
+  prompt: string
+  status: HeadlessTaskStatus
+  startedAt: number
+  finishedAt?: number
+  durationMs?: number
+  processStarted?: boolean
+  launchErrorCode?: HeadlessTaskRecord['launchErrorCode']
+  exitCode?: number | null
+  signal?: string | null
+  killed?: boolean
+  error?: string
+  output?: HeadlessTaskOutputSummary
+  /** Read-side explanation for non-successful scheduled execution. Derived
+   * from durable fields so old registry entries need no migration. */
+  failure?: IssueRunFailure
+  /** Whether OpenAlice currently has a native runtime mapping for resumeId. */
+  resumable: boolean
+}
+
+/** Explicit whitelist: do not spread HeadlessTaskRecord here. Old registry
+ * records may contain adapter-specific compatibility fields. */
+export function issueRunRecord(task: HeadlessTaskRecord, resumable: boolean): IssueRunRecord {
+  const failure = issueRunFailure(task)
+  return {
+    taskId: task.taskId,
+    resumeId: task.resumeId,
+    ...(task.parentTaskId ? { parentTaskId: task.parentTaskId } : {}),
+    wsId: task.wsId,
+    ...(task.trigger?.kind === 'issue' ? { issueId: task.trigger.issueId } : {}),
+    agent: task.agent,
+    ...(task.model ? { model: task.model } : {}),
+    ...(task.effort ? { effort: task.effort } : {}),
+    prompt: task.prompt,
+    status: task.status,
+    startedAt: task.startedAt,
+    ...(task.finishedAt !== undefined ? { finishedAt: task.finishedAt } : {}),
+    ...(task.durationMs !== undefined ? { durationMs: task.durationMs } : {}),
+    ...(task.processStarted !== undefined ? { processStarted: task.processStarted } : {}),
+    ...(task.launchErrorCode !== undefined ? { launchErrorCode: task.launchErrorCode } : {}),
+    ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
+    ...(task.signal !== undefined ? { signal: task.signal } : {}),
+    ...(task.killed !== undefined ? { killed: task.killed } : {}),
+    ...(task.error !== undefined ? { error: task.error } : {}),
+    ...(task.output !== undefined ? { output: task.output } : {}),
+    ...(failure ? { failure } : {}),
+    resumable,
+  }
+}
+
+/** One human-facing Issue timeline assembled from durable attribution edges
+ * and structured comments. `commented` provenance is intentionally omitted:
+ * the comment record itself is the richer event and rendering both would
+ * duplicate one action. Headless executions remain in the independent Runs
+ * section because they are operational history, not collaboration activity. */
+export function issueActivityRecords(
+  changes: readonly IssueProvenanceRecord[],
+  comments: readonly IssueComment[],
+): IssueActivityRecord[] {
+  return [
+    ...changes
+      .filter((change) => change.action !== 'commented')
+      .map((change) => ({ ...change, kind: 'change' as const })),
+    ...comments
+      .map((comment) => ({
+        kind: 'comment' as const,
+        id: comment.id,
+        at: Date.parse(comment.at),
+        comment,
+      }))
+      .filter((record) => Number.isFinite(record.at)),
+  ].sort((a, b) => a.at - b.at)
 }
 
 /** Filter a workspace's inbox entries to the ones a given issue produced
  *  (`origin.issueId` match). Pure + order-preserving, so the caller's
  *  newest-first read order carries through. The issue→inbox join, kept in the
  *  domain (not the HTTP route) so every surface — CLI, MCP — gets it. */
-export function inboxReportsForIssue(entries: readonly InboxEntry[], issueId: string): InboxEntry[] {
-  return entries.filter((e) => e.origin?.issueId === issueId)
-}
-
-/** A missing assignee in a workspace-owned issue means "this workspace owns it".
- *  Keep an explicit `assignee: unassigned` as unassigned so human edits survive. */
-export function issueAssigneeForWorkspace(issue: IssueRecord, workspaceTag?: string): string {
-  return issue.assigneeDefaulted && workspaceTag ? `ws:${workspaceTag}` : issue.assignee
+export function inboxReportsForIssue(
+  entries: readonly InboxEntry[],
+  workspaceId: string,
+  issueId: string,
+): InboxEntry[] {
+  return entries.filter((entry) =>
+    entry.origin?.issueId === issueId &&
+    (entry.origin.issueWorkspaceId ?? entry.workspaceId) === workspaceId,
+  )
 }
 
 /** Map a validated issue (+ its firing markers, iff scheduled) to the detail
- *  issue shape. Keeps the body and the scheduling frontmatter the board drops. */
+ *  issue shape. Keeps What and scheduling frontmatter the board drops. */
 export function detailIssue(
   issue: IssueRecord,
   markers: IssueFiringMarkers | null,
-  workspaceTag?: string,
 ): IssueDetailIssue {
   return {
     id: issue.id,
     title: issue.title,
-    body: issue.body,
+    what: issue.what,
     status: issue.status,
     priority: issue.priority,
-    assignee: issueAssigneeForWorkspace(issue, workspaceTag),
+    assignee: issue.assignee,
     ...(issue.when ? { when: issue.when } : {}),
-    ...(issue.what ? { what: issue.what } : {}),
     ...(issue.agent ? { agent: issue.agent } : {}),
-    ...(markers ? { lastFiredAtMs: markers.lastFiredAtMs, nextDueAtMs: markers.nextDueAtMs } : {}),
+    ...(issue.model ? { model: issue.model } : {}),
+    ...(issue.effort ? { effort: issue.effort } : {}),
+    ...(markers ? {
+      lastFiredAtMs: markers.lastFiredAtMs,
+      nextDueAtMs: markers.nextDueAtMs,
+      automationHealth: markers.automationHealth,
+    } : {}),
   }
 }
 
 /** Map one validated issue (+ its firing markers, iff scheduled) to a board row.
  *  Pure: the caller resolves `markers` for scheduled issues and passes `null` for
- *  pure board work items. The markdown body is intentionally dropped. */
+ *  pure board work items. Markdown What is intentionally dropped. */
 export function snapshotBoardIssue(
   issue: IssueRecord,
   markers: IssueFiringMarkers | null,
-  workspaceTag?: string,
 ): IssuesSnapshotIssue {
   return {
     id: issue.id,
     title: issue.title,
     status: issue.status,
     priority: issue.priority,
-    assignee: issueAssigneeForWorkspace(issue, workspaceTag),
+    assignee: issue.assignee,
     ...(issue.agent ? { agent: issue.agent } : {}),
+    ...(issue.model ? { model: issue.model } : {}),
+    ...(issue.effort ? { effort: issue.effort } : {}),
     ...(issue.when ? { when: issue.when } : {}),
-    ...(markers ? { lastFiredAtMs: markers.lastFiredAtMs, nextDueAtMs: markers.nextDueAtMs } : {}),
+    ...(markers ? {
+      lastFiredAtMs: markers.lastFiredAtMs,
+      nextDueAtMs: markers.nextDueAtMs,
+      automationHealth: markers.automationHealth,
+    } : {}),
   }
 }

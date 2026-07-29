@@ -9,7 +9,7 @@
 
 import Decimal from 'decimal.js'
 import { Contract, Order, ContractDescription, ContractDetails, UNSET_DECIMAL, UNSET_INTEGER, UNSET_DOUBLE } from '@traderalice/ibkr'
-import { BrokerError, type IBroker, type AccountInfo, type Position, type OpenOrder, type PlaceOrderResult, type Quote, type MarketClock, type AccountCapabilities, type BrokerHealth, type BrokerHealthInfo, type UTAReach, type UTATier, type TpSlParams, type Bar, type BarParams, type ExpandContractFilters, type ContractExpansion, type SubAccountRef } from './brokers/types.js'
+import { BrokerError, type IBroker, type AccountInfo, type Position, type OpenOrder, type PlaceOrderResult, type Quote, type MarketClock, type AccountCapabilities, type BrokerHealth, type BrokerHealthInfo, type BrokerConnectionStateEvent, type UTAReach, type UTATier, type TpSlParams, type Bar, type BarParams, type ExpandContractFilters, type ContractExpansion, type SubAccountRef } from './brokers/types.js'
 
 const REACH_RANK: Record<UTAReach, number> = { down: 0, connected: 1, readable: 2 }
 import { TradingGit } from './git/TradingGit.js'
@@ -152,6 +152,7 @@ export class UnifiedTradingAccount {
     this._onHealthChange = options.onHealthChange
     this._onPostPush = options.onPostPush
     this._onPostReject = options.onPostReject
+    this.broker.setConnectionStateListener?.((event) => this._onBrokerConnectionState(event))
 
     // Wire internals
     this._getState = async (): Promise<GitState> => {
@@ -184,6 +185,9 @@ export class UnifiedTradingAccount {
         case 'modifyOrder':
           return broker.modifyOrder(op.orderId, op.changes)
         case 'closePosition':
+          if (op.quantity != null) {
+            await this._assertCloseQuantityWithinPosition(op.contract, op.quantity)
+          }
           return broker.closePosition(op.contract, op.quantity)
         case 'cancelOrder':
           return broker.cancelOrder(op.orderId, op.orderCancel)
@@ -307,11 +311,44 @@ export class UnifiedTradingAccount {
   }
 
   private _notePermanent(err: unknown): void {
-    if (err instanceof BrokerError && err.permanent) this._disabled = true
+    // Broker packs may carry their own physical copy of uta-protocol. Preserve
+    // the structured BrokerError contract across that module boundary instead
+    // of relying exclusively on class identity.
+    if (
+      err instanceof BrokerError
+      ? err.permanent
+      : !!err && typeof err === 'object'
+        && (err as { name?: unknown }).name === 'BrokerError'
+        && (err as { permanent?: unknown }).permanent === true
+    ) this._disabled = true
   }
   private _noteFailure(err: unknown): void {
     this._lastError = err instanceof Error ? err.message : String(err)
     this._lastFailureAt = new Date()
+  }
+
+  /** A broker heartbeat knows more than passive failure counting: once the
+   * transport is explicitly dead, serving a green health badge is unsafe.
+   * Recovery still has to pass the normal capability ladder before the UTA is
+   * marked healthy again. */
+  private _onBrokerConnectionState(event: BrokerConnectionStateEvent): void {
+    if (event.state === 'alive') return
+    if (event.state === 'restored') {
+      this.nudgeRecovery()
+      return
+    }
+    if (this._disabled) return
+
+    this._currentReach = 'down'
+    this._consecutiveFailures = UnifiedTradingAccount.OFFLINE_THRESHOLD
+    this._lastError = event.error ?? 'Broker transport reported a dead connection'
+    this._lastFailureAt = new Date()
+
+    // During the initial handshake, _connect owns the transition into recovery
+    // and will emit the first settled health snapshot.
+    if (this._connecting) return
+    if (!this._recovering) this._startRecovery()
+    else this._emitHealthChange()
   }
 
   /** Initial broker connection — fire-and-forget from constructor. */
@@ -411,8 +448,8 @@ export class UnifiedTradingAccount {
     if (this._recoveryTimer) {
       clearTimeout(this._recoveryTimer)
       this._recoveryTimer = undefined
-      this._recovering = false
     }
+    this._recovering = false
     if (prev !== this.health) this._emitHealthChange()
   }
 
@@ -431,7 +468,7 @@ export class UnifiedTradingAccount {
   nudgeRecovery(): void {
     if (!this._recovering || this._disabled) return
     if (this._recoveryTimer) clearTimeout(this._recoveryTimer)
-    this._scheduleRecoveryAttempt(0)
+    this._scheduleRecoveryAttempt(0, 0)
   }
 
   private _startRecovery(): void {
@@ -442,12 +479,13 @@ export class UnifiedTradingAccount {
     this._scheduleRecoveryAttempt(0)
   }
 
-  private _scheduleRecoveryAttempt(attempt: number): void {
-    const delay = Math.min(
+  private _scheduleRecoveryAttempt(attempt: number, delayOverride?: number): void {
+    const delay = delayOverride ?? Math.min(
       UnifiedTradingAccount.RECOVERY_BASE_MS * 2 ** attempt,
       UnifiedTradingAccount.RECOVERY_MAX_MS,
     )
     this._recoveryTimer = setTimeout(async () => {
+      this._recoveryTimer = undefined
       this._currentReach = await this._attemptReach()
       if (this._disabled) {
         this._recovering = false
@@ -521,6 +559,38 @@ export class UnifiedTradingAccount {
     if (this.readOnly) {
       throw new BrokerError('CONFIG',
         `Account "${this.label}" is read-only${this.keyless ? ' (keyless public-data account)' : ''} — ${action} would mutate the external account, which is not allowed.`)
+    }
+  }
+
+  /**
+   * Re-check an explicit partial-close quantity against the latest broker
+   * position immediately before dispatch. This is deliberately later than
+   * staging: a position can change after the UI or CLI created its proposal.
+   * Broker adapters do not all enforce reduce-only semantics, so allowing an
+   * oversized reverse order here could cross through flat into a new exposure.
+   */
+  private async _assertCloseQuantityWithinPosition(contract: Contract, quantity: Decimal): Promise<void> {
+    if (!quantity.isFinite() || quantity.lte(0)) {
+      throw new Error('closePosition: qty must be a positive finite number.')
+    }
+
+    const nativeKey = this.broker.getNativeKey(contract)
+    const positions = await this._callBroker(() => this.broker.getPositions())
+    const position = positions.find(candidate =>
+      this.broker.getNativeKey(candidate.contract) === nativeKey,
+    )
+    const label = contract.symbol || contract.localSymbol || nativeKey
+
+    if (!position) {
+      throw new Error(`closePosition: no open position found for ${label}. Refresh positions before retrying.`)
+    }
+
+    const available = position.quantity.abs()
+    if (quantity.gt(available)) {
+      throw new Error(
+        `closePosition: quantity ${quantity.toString()} exceeds the open ${label} position size ${available.toString()}. ` +
+        `Use a quantity no greater than ${available.toString()}, or omit qty to close the full position.`,
+      )
     }
   }
 
@@ -674,13 +744,25 @@ export class UnifiedTradingAccount {
     const contract = this.contractFromAliceId(params.aliceId)
     if (params.symbol) contract.symbol = params.symbol
 
+    let quantity: Decimal | undefined
+    if (params.qty != null) {
+      try {
+        quantity = new Decimal(String(params.qty))
+      } catch {
+        throw new Error('closePosition: qty must be a positive finite number.')
+      }
+      if (!quantity.isFinite() || quantity.lte(0)) {
+        throw new Error('closePosition: qty must be a positive finite number.')
+      }
+    }
+
     const subAccountId = this._resolveWriteSubAccount(contract, params.subAccountId)
     if (subAccountId) this._stagedSubAccountIds.push(subAccountId)
 
     return this.git.add({
       action: 'closePosition',
       contract,
-      quantity: params.qty != null ? new Decimal(String(params.qty)) : undefined,
+      quantity,
     })
   }
 
@@ -1169,6 +1251,7 @@ export class UnifiedTradingAccount {
   // ==================== Lifecycle ====================
 
   async close(): Promise<void> {
+    this.broker.setConnectionStateListener?.(null)
     if (this._recoveryTimer) {
       clearTimeout(this._recoveryTimer)
       this._recoveryTimer = undefined

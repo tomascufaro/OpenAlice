@@ -75,7 +75,7 @@ export function buildSpawnEnv(
   const out: { [key: string]: string } = {};
   for (const [k, v] of Object.entries(parent)) {
     if (typeof v !== 'string') continue;
-    if (shouldStrip(k)) continue;
+    if (shouldStrip(k, v)) continue;
     out[k] = v;
   }
   // Announce ourselves honestly so well-behaved TUI apps can detect us.
@@ -102,7 +102,17 @@ export function buildSpawnEnv(
   for (const [k, v] of Object.entries(extras)) {
     out[k] = v;
   }
-  out['PATH'] = buildCliPath(out);
+  const cliPath = buildCliPath(out);
+  // Windows environment names are case-insensitive, but JavaScript objects are
+  // not. A typical host contributes `Path`; adding a separate `PATH` leaves two
+  // entries in node-pty's environment block. The first Pi process can still
+  // launch, but Node normalizes the duplicate back to the unaugmented `Path`,
+  // so Pi's nested bash tool loses the OpenAlice CLI shim directory. Keep one
+  // canonical spelling before crossing the process boundary.
+  for (const key of Object.keys(out)) {
+    if (key.toUpperCase() === 'PATH') delete out[key];
+  }
+  out['PATH'] = cliPath;
   delete out['OPENALICE_WORKSPACE_CLI_BIN_PATH'];
   return out;
 }
@@ -153,7 +163,12 @@ export function buildCliPath(env: NodeJS.ProcessEnv = process.env): string {
   return out.join(delimiter);
 }
 
-function shouldStrip(name: string): boolean {
+function shouldStrip(name: string, value: string): boolean {
   if (STRIP_EXACT.has(name)) return true;
+  // Parent shells and launchers often export these style switches globally.
+  // Do not let a parent process's logging preference disable color in a fresh
+  // terminal emulator. User shell startup files may still set these again.
+  if (name === 'NO_COLOR') return true;
+  if ((name === 'FORCE_COLOR' || name === 'CLICOLOR') && value === '0') return true;
   return STRIP_PREFIXES.some((p) => name.startsWith(p));
 }

@@ -1,11 +1,17 @@
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { dirname } from 'path'
+import {
+  acquireOpenAliceRuntimeLocks,
+  takeoverRequested,
+  type OpenAliceRuntimeLock,
+} from '@traderalice/guardian-runtime'
 // The in-process AI loop (AgentCenter, then GenerateRouter + AgentWork) is gone
 // as of 0.40 — the model loop runs inside the native workspace CLIs; autonomous
 // runs go through headless workspace dispatch (cron → workspace).
 import { loadConfig, readMarketDataConfig } from './core/config.js'
 import { printLegacyDataNotice } from './core/legacy-data-notice.js'
-import { dataPath, defaultPath } from '@/core/paths.js'
+import { dataPath, defaultPath, userDataHome } from '@/core/paths.js'
+import { resolveLauncherRoot } from '@/workspaces/config.js'
 import type { Plugin, EngineContext } from './core/types.js'
 import { McpPlugin } from './server/mcp.js'
 import { LocalToolGatewayPlugin } from './server/local-tool-gateway.js'
@@ -16,6 +22,7 @@ import { createUTAClient } from '@traderalice/uta-protocol'
 import { UTAManagerSDK } from './services/uta-client/index.js'
 import { waitForUTAReady } from './services/uta-supervisor/health.js'
 import { resolveUTAUrl } from './services/uta-supervisor/url.js'
+import { scheduleInstalledBrokerPackReconciliation } from './services/broker-packs/auto-updater.js'
 import {
   liteUnavailableReason,
   readonlyMutationReason,
@@ -45,20 +52,24 @@ import { createIndexTools } from './tool/indices.js'
 import { createEconomyTools } from './tool/economy.js'
 import { SessionStore } from './core/session.js'
 import { createInboxStore } from './core/inbox-store.js'
+import { startInboxConnectorBridge } from './services/connector-client/index.js'
 import { ToolCenter } from './core/tool-center.js'
 import { WorkspaceToolCenter } from './core/workspace-tool-center.js'
 import { inboxPushFactory } from './tool/inbox-push.js'
 import { inboxReadFactory } from './tool/inbox-read.js'
 import { workspacePathFactory } from './tool/workspace-path.js'
+import { workspaceSessionsFactory } from './tool/workspace-sessions.js'
+import { workspaceListFactory } from './tool/workspace-list.js'
+import { workspaceTemplateUpgradeFactory } from './tool/workspace-template-upgrade.js'
 import { createEntityStore } from './core/entity-store.js'
 import { entityUpsertFactory } from './tool/entity-upsert.js'
 import { entitySearchFactory } from './tool/entity-search.js'
 import { issueToolFactories } from './tool/issue-tools.js'
-import { createEventLog } from './core/event-log.js'
+import { sessionSignatureFactory } from './tool/session-signature.js'
+import { provenanceShowFactory } from './tool/provenance-show.js'
+import { conversationToolFactories } from './tool/conversation.js'
+import { artifactConversationToolFactories } from './tool/conversation-artifacts.js'
 import { createToolCallLog } from './core/tool-call-log.js'
-import { createListenerRegistry } from './core/listener-registry.js'
-import { createEventBus } from './core/event-bus.js'
-import { createMetricsListener } from './task/metrics/index.js'
 import { NewsCollectorStore, NewsCollector } from './domain/news/index.js'
 import { createNewsArchiveTools } from './tool/news.js'
 
@@ -68,6 +79,13 @@ const PERSONA_FILE = dataPath('brain', 'persona.md')
 const PERSONA_DEFAULT = defaultPath('persona.default.md')
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+let runtimeLock: OpenAliceRuntimeLock | null = null
+
+async function releaseRuntimeLock(): Promise<void> {
+  const current = runtimeLock
+  runtimeLock = null
+  await current?.release()
+}
 
 /** Read a file, copying from default if it doesn't exist yet. */
 async function readWithDefault(target: string, defaultFile: string): Promise<string> {
@@ -88,15 +106,7 @@ async function main() {
 
   const config = await loadConfig()
 
-  // ==================== Event Log ====================
-
-  const eventLog = await createEventLog()
   const toolCallLog = await createToolCallLog()
-
-  // ==================== Listener Registry ====================
-  // Created early so producers can declare against it.
-
-  const listenerRegistry = createListenerRegistry(eventLog)
 
   // ==================== Tool Center (created early — UTAManager needs it) ====================
 
@@ -108,9 +118,16 @@ async function main() {
   workspaceToolCenter.register(inboxPushFactory)
   workspaceToolCenter.register(inboxReadFactory)
   workspaceToolCenter.register(workspacePathFactory)
+  workspaceToolCenter.register(workspaceSessionsFactory)
+  workspaceToolCenter.register(workspaceListFactory)
+  workspaceToolCenter.register(workspaceTemplateUpgradeFactory)
   workspaceToolCenter.register(entityUpsertFactory)
   workspaceToolCenter.register(entitySearchFactory)
   for (const f of issueToolFactories) workspaceToolCenter.register(f)
+  workspaceToolCenter.register(sessionSignatureFactory)
+  workspaceToolCenter.register(provenanceShowFactory)
+  for (const f of conversationToolFactories) workspaceToolCenter.register(f)
+  for (const f of artifactConversationToolFactories) workspaceToolCenter.register(f)
 
   // ==================== UTA SDK (HTTP boundary) ====================
   //
@@ -163,7 +180,7 @@ async function main() {
   })
   await newsStore.init()
 
-  // ==================== OpenBB Clients ====================
+  // ==================== Embedded Provider Clients ====================
 
   const { providers } = config.marketData
 
@@ -210,7 +227,7 @@ async function main() {
 
   const marketSearch = { symbolIndex, equityVendors: getEquityVendors, equityClient, cryptoClient, currencyClient, commodityCatalog }
 
-  // Federated bar layer — vendor (OpenTypeBB) + broker (UTA) OHLCV behind one
+  // Federated bar layer — embedded vendor adapters + broker (UTA) OHLCV behind one
   // barId-keyed interface. Vendor branch live now; UTA branch lands with Phase 1.
   const barService = createBarService({
     marketSearch,
@@ -292,20 +309,11 @@ async function main() {
   // `ref.current` is null until the plugin boots; an early cron fire is a loud
   // skip (see cron listener). Created here so cron dispatch can hold it.
   const workspaceServiceRef = createWorkspaceServiceRef()
+  startInboxConnectorBridge(inboxStore, () => workspaceServiceRef.current)
 
   // Snapshot scheduler lives in UTA after Step 6 — Alice no longer
   // drives the periodic equity-curve writes. The UTA service starts
   // its own scheduler at boot.
-
-  // ==================== Event Metrics (wildcard observer) ====================
-
-  const metricsListener = createMetricsListener({ registry: listenerRegistry })
-  await metricsListener.start()
-
-  // ==================== Activate Listeners ====================
-
-  await listenerRegistry.start()
-  console.log(`listener-registry: started (${listenerRegistry.list().length} listeners)`)
 
   // ==================== News Collector ====================
 
@@ -336,7 +344,7 @@ async function main() {
   const webTransport = process.env['OPENALICE_WEB_TRANSPORT'] === 'ipc' ? 'ipc' : 'http'
   const toolBaseUrl = process.env['OPENALICE_TOOL_BASE_URL']
     ?? (localCliOnWeb
-      ? `http://127.0.0.1:${config.connectors.web.port}/cli`
+      ? `http://127.0.0.1:${config.ports.web}/cli`
       : `http://127.0.0.1:${config.mcp.port}/cli`)
   const mcpBaseUrl = mcpEnabled ? `http://127.0.0.1:${config.mcp.port}/mcp` : undefined
 
@@ -363,34 +371,36 @@ async function main() {
   }
 
   // Web UI is always active (no enabled flag)
-  if (config.connectors.web.port) {
+  if (config.ports.web) {
     corePlugins.push(new WebPlugin(
       {
-        port: config.connectors.web.port,
+        port: config.ports.web,
         mcpPort: config.mcp.port,
         toolBaseUrl,
         ...(mcpBaseUrl ? { mcpBaseUrl } : {}),
         localCliOnWeb,
         listen: webTransport !== 'ipc',
         ...(process.env['OPENALICE_TOOL_SOCKET'] ? { cliSocketPath: process.env['OPENALICE_TOOL_SOCKET'] } : {}),
+        // The packaged Workspace acceptance exercises the real scanner without
+        // adding a minute to every host in the package matrix. This flag is
+        // owned by the smoke launcher and never changes normal cadence.
+        ...(process.env['OPENALICE_ELECTRON_SMOKE_WORKSPACE_ACCEPTANCE'] === '1'
+          ? { scheduleScannerIntervalMs: 100 }
+          : {}),
       },
       workspaceServiceRef,
     ))
   }
 
-  // Optional plugins — none today. The legacy connector cluster
-  // (Telegram / MCP-Ask) was removed; the map is kept (empty) so the
-  // start/stop iteration below stays uniform and future optional
-  // plugins have a home.
+  // Optional in-process plugins — none today. External IM connections live in
+  // the independently supervised Connector Service, never in Alice.
   const optionalPlugins = new Map<string, Plugin>()
 
   // ==================== Engine Context ====================
 
   const ctx: EngineContext = {
-    config, inboxStore, entityStore, eventLog, toolCallLog, toolCenter,
+    config, inboxStore, entityStore, toolCallLog, toolCenter,
     workspaceToolCenter,
-    listenerRegistry,
-    fire: createEventBus(eventLog),
     bbEngine: getSDKExecutor(),
     marketSearch,
     equityClient,
@@ -407,6 +417,7 @@ async function main() {
   }
 
   console.log('engine: started')
+  scheduleInstalledBrokerPackReconciliation()
 
   // Broker catalog refresh, snapshot scheduling, and broker close-on-
   // shutdown all live in the UTA service after Step 6.
@@ -417,14 +428,12 @@ async function main() {
   const shutdown = async () => {
     stopped = true
     newsCollector?.stop()
-    metricsListener.stop()
-    await listenerRegistry.stop()
     for (const plugin of [...corePlugins, ...optionalPlugins.values()]) {
       await plugin.stop()
     }
     await newsStore.close()
     await toolCallLog.close()
-    await eventLog.close()
+    await releaseRuntimeLock()
     process.exit(0)
   }
   process.on('SIGINT', shutdown)
@@ -437,7 +446,38 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+async function start(): Promise<void> {
+  const guardianPid = positiveInteger(process.env['OPENALICE_GUARDIAN_PID'])
+  const guardianStartedAt = positiveInteger(process.env['OPENALICE_GUARDIAN_STARTED_AT'])
+  runtimeLock = await acquireOpenAliceRuntimeLocks({
+    userDataHome,
+    launcherRoot: resolveLauncherRoot(),
+    launcher: process.env['OPENALICE_LAUNCHER'] ?? 'standalone',
+    takeover: takeoverRequested(),
+    ...(guardianPid ? { guardianPid } : {}),
+    ...(guardianStartedAt ? { guardianStartedAt } : {}),
+    onOwnershipLost: (err) => {
+      console.error('fatal: OpenAlice runtime ownership lost:', err)
+      try { process.kill(process.pid, 'SIGTERM') } catch { process.exit(1) }
+    },
+  })
+  try {
+    await main()
+  } catch (err) {
+    await releaseRuntimeLock().catch((releaseErr) => {
+      console.error('runtime lock release failed after startup error:', releaseErr)
+    })
+    throw err
+  }
+}
+
+function positiveInteger(raw: string | undefined): number | undefined {
+  if (!raw) return undefined
+  const value = Number(raw)
+  return Number.isInteger(value) && value > 0 ? value : undefined
+}
+
+start().catch((err) => {
   console.error('fatal:', err)
   process.exit(1)
 })

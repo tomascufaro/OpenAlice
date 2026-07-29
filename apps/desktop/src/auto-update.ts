@@ -1,5 +1,6 @@
 import { app, ipcMain, shell, type BrowserWindow } from 'electron'
 import electronUpdater from 'electron-updater'
+import { resolveAutoUpdateCapability } from './auto-update-policy.js'
 
 const { autoUpdater } = electronUpdater
 
@@ -11,15 +12,22 @@ type UpdaterStatus = {
   message?: string
 }
 
+type UpdateCheckResult =
+  | { supported: true }
+  | { supported: false; reason: 'not-packaged' | 'missing-config' }
+
 export interface AutoUpdateHooks {
   beforeInstall: () => Promise<void>
 }
 
 export function configureAutoUpdate(win: BrowserWindow, hooks: AutoUpdateHooks): void {
-  if (!app.isPackaged) return
-
   let downloadedVersion: string | null = null
   let latestStatus: UpdaterStatus | null = null
+  let activeCheck: Promise<UpdateCheckResult> | null = null
+  const capability = resolveAutoUpdateCapability({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+  })
 
   const releaseUrlFor = (version: string): string =>
     `https://github.com/TraderAlice/OpenAlice/releases/tag/v${version}`
@@ -30,8 +38,31 @@ export function configureAutoUpdate(win: BrowserWindow, hooks: AutoUpdateHooks):
     win.webContents.send('openalice:updater:status', status)
   }
 
+  const checkForUpdates = (): Promise<UpdateCheckResult> => {
+    if (!capability.enabled) {
+      return Promise.resolve({ supported: false, reason: capability.reason })
+    }
+    if (activeCheck) return activeCheck
+    activeCheck = autoUpdater.checkForUpdates()
+      .then(() => ({ supported: true as const }))
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        if (latestStatus?.phase !== 'error' || latestStatus.message !== message) {
+          sendStatus({ phase: 'error', message })
+        }
+        return { supported: true as const }
+      })
+      .finally(() => {
+        activeCheck = null
+      })
+    return activeCheck
+  }
+
   ipcMain.removeHandler('openalice:updater:get-status')
   ipcMain.handle('openalice:updater:get-status', () => latestStatus)
+
+  ipcMain.removeHandler('openalice:updater:check-for-updates')
+  ipcMain.handle('openalice:updater:check-for-updates', () => checkForUpdates())
 
   ipcMain.removeHandler('openalice:updater:install-and-restart')
   ipcMain.handle('openalice:updater:install-and-restart', async () => {
@@ -52,14 +83,24 @@ export function configureAutoUpdate(win: BrowserWindow, hooks: AutoUpdateHooks):
     return { ok: true }
   })
 
+  // Keep the renderer IPC contract stable in dev and non-updatable directory
+  // packages. Only the updater engine itself depends on packaged metadata.
+  if (!capability.enabled) {
+    if (capability.reason === 'missing-config') {
+      console.info(`[updater] disabled: update metadata not found at ${capability.configPath}`)
+    }
+    return
+  }
+
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = false
   autoUpdater.allowPrerelease = app.getVersion().includes('-')
-  autoUpdater.channel = channelForVersion(app.getVersion())
+  autoUpdater.channel = channelForVersion(app.getVersion(), process.platform, process.arch)
   autoUpdater.allowDowngrade = false
 
   autoUpdater.on('error', (err) => {
     console.error('[updater] update check failed:', err)
+    sendStatus({ phase: 'error', message: err instanceof Error ? err.message : String(err) })
   })
 
   autoUpdater.on('update-available', (info) => {
@@ -81,12 +122,17 @@ export function configureAutoUpdate(win: BrowserWindow, hooks: AutoUpdateHooks):
     sendStatus({ phase: 'downloaded', version: info.version, releaseUrl: releaseUrlFor(info.version) })
   })
 
-  void autoUpdater.checkForUpdates().catch((err) => {
-    console.error('[updater] checkForUpdates threw:', err)
-  })
+  // electron-updater emits the same rejection through its `error` event
+  // before rethrowing it from this promise. The event handler above owns the
+  // diagnostic; consume the promise rejection so one failure is logged once.
+  void checkForUpdates()
 }
 
-function channelForVersion(version: string): string {
+export function channelForVersion(version: string, platform: NodeJS.Platform, arch: string): string {
   const prerelease = version.match(/^\d+\.\d+\.\d+-([0-9A-Za-z-]+)/)
-  return prerelease?.[1] ?? 'latest'
+  const channel = prerelease?.[1] ?? 'latest'
+  // GenericProvider appends "-mac" to this channel. Intel therefore requests
+  // latest-intel-mac.yml / beta-intel-mac.yml, which are compatibility aliases
+  // of the public latest-mac-intel.yml / beta-mac-intel.yml feeds.
+  return platform === 'darwin' && arch === 'x64' ? `${channel}-intel` : channel
 }

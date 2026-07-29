@@ -1,4 +1,8 @@
-import { readCredentials, setCredentialLastModel, type Credential } from '@/core/config.js'
+import {
+  readCredentials,
+  setCredentialLastModel,
+  type Credential,
+} from '@/core/config.js'
 import {
   compatibleCredentials,
   credentialToWorkspaceAiCred,
@@ -79,7 +83,9 @@ function injectableCredentials(
   const out: Array<[string, Credential, WorkspaceAiCred]> = []
   for (const [slug, credential] of compatibleCredentials(credentials, agentId)) {
     const model = resolveInjectionModel(credential)
-    const wsCred = credentialToWorkspaceAiCred(credential, agentId, model ? { model } : {})
+    const wsCred = credentialToWorkspaceAiCred(credential, agentId, {
+      ...(model ? { model } : {}),
+    })
     if (wsCred && isUsableWorkspaceAiCred(agentId, wsCred)) out.push([slug, credential, wsCred])
   }
   return out
@@ -213,7 +219,12 @@ export async function ensureAgentCredentialReady(opts: {
   const detectedCredentialSlug = matchCredentialByApiKey(credentials, cfg?.apiKey)
   const picked = pickedCredentialSlug && injectableMap.has(pickedCredentialSlug) ? pickedCredentialSlug : null
 
-  if (!picked && isUsableWorkspaceAiCred(agentId, cfg)) {
+  // A repeated UI pick of the credential already present in this Workspace is
+  // not a request to rewrite its adapter config. Preserve its explicit wire,
+  // auth mode, model, and context window; Quick Chat sends the visible provider
+  // pill on every turn, including immediately after creation-time defaults were
+  // injected.
+  if ((!picked || picked === detectedCredentialSlug) && isUsableWorkspaceAiCred(agentId, cfg)) {
     return {
       agent: agentId,
       ready: true,

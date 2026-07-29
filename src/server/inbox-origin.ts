@@ -35,11 +35,13 @@ import type { InboxOrigin } from '../core/inbox-store.js'
  *  the server layer doesn't hard-depend on the workspaces/ module shapes. */
 interface HeadlessRecordLike {
   readonly taskId: string
-  readonly issueId?: string
+  readonly resumeId: string
+  readonly trigger?: { readonly kind: 'issue'; readonly workspaceId: string; readonly issueId: string }
   readonly agent: string
 }
 interface SessionRecordLike {
   readonly id: string
+  readonly resumeId: string
   readonly wsId: string
   readonly agent: string
 }
@@ -81,7 +83,11 @@ export function resolveInboxOrigin(
       return {
         kind: 'headless',
         runId: rec.taskId,
-        ...(rec.issueId ? { issueId: rec.issueId } : {}),
+        resumeId: rec.resumeId,
+        ...(rec.trigger?.kind === 'issue' ? {
+          issueId: rec.trigger.issueId,
+          issueWorkspaceId: rec.trigger.workspaceId,
+        } : {}),
         ...(rec.agent ? { agent: rec.agent } : {}),
       }
     }
@@ -99,6 +105,7 @@ export function resolveInboxOrigin(
       return {
         kind: 'interactive',
         sessionId: rec.id,
+        resumeId: rec.resumeId,
         ...(rec.agent ? { agent: rec.agent } : {}),
       }
     }

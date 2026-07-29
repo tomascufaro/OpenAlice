@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { Navigate, Route, Routes, useParams, useSearchParams } from 'react-router-dom'
 import { useWorkspace } from './store'
-import { specEquals, type ActivitySection, type ViewSpec } from './types'
+import { isDevTab, specEquals, type ActivitySection, type ViewSpec } from './types'
 import { getView } from './registry'
 
 /**
@@ -38,6 +38,9 @@ export function UrlAdopter() {
             /chat/:channelId (the retired traditional-chat channels) still
             redirects to Inbox so stale bookmarks land on a live surface. */}
         <Route path="/chat" element={<AdoptStatic spec={{ kind: 'chat-landing', params: {} }} />} />
+        <Route path="/chat/manager" element={<AdoptStatic spec={{ kind: 'workspace-manager', params: {} }} />} />
+        <Route path="/chat/manager/s/:sessionId" element={<AdoptWorkspaceManager />} />
+        <Route path="/chat/workspaces/:wsId/view/:path" element={<AdoptChatFileViewer />} />
         <Route path="/chat/workspaces/:wsId" element={<AdoptChatWorkspace />} />
         <Route path="/chat/workspaces/:wsId/s/:sessionId" element={<AdoptChatWorkspace />} />
         <Route path="/chat/:channelId" element={<Navigate to="/inbox" replace />} />
@@ -55,6 +58,7 @@ export function UrlAdopter() {
         <Route path="/market/boards/:board" element={<AdoptMarketBoard />} />
         <Route path="/market/:assetClass/:symbol" element={<AdoptMarketDetail />} />
         <Route path="/trading-as-git" element={<AdoptStatic spec={{ kind: 'trading-as-git', params: {} }} />} />
+        <Route path="/connectors" element={<AdoptStatic spec={{ kind: 'connectors', params: {} }} />} />
 
         {/* Settings — one entry per category */}
         <Route path="/settings" element={<AdoptStatic spec={{ kind: 'settings', params: { category: 'general' } }} />} />
@@ -65,6 +69,7 @@ export function UrlAdopter() {
         <Route path="/settings/mcp" element={<AdoptStatic spec={{ kind: 'settings', params: { category: 'mcp' } }} />} />
         <Route path="/settings/market-data" element={<AdoptStatic spec={{ kind: 'settings', params: { category: 'market-data' } }} />} />
         <Route path="/settings/news-collector" element={<AdoptStatic spec={{ kind: 'settings', params: { category: 'news-collector' } }} />} />
+        <Route path="/settings/connectors" element={<AdoptStatic spec={{ kind: 'settings', params: { category: 'connectors' } }} />} />
         <Route path="/settings/uta/:id" element={<AdoptUtaDetail />} />
 
         {/* Dev */}
@@ -80,6 +85,7 @@ export function UrlAdopter() {
 
         {/* Tracked (entity index) */}
         <Route path="/tracked" element={<AdoptStatic spec={{ kind: 'tracked', params: {} }} />} />
+        <Route path="/tracked/files/:wsId/:path" element={<AdoptTrackedFileViewer />} />
         <Route path="/tracked/issues/:wsId/:id" element={<AdoptTrackedIssueDetail />} />
 
         {/* Workspaces */}
@@ -184,8 +190,7 @@ function AdoptUtaDetail() {
 
 function AdoptDev() {
   const { tab } = useParams<{ tab: string }>()
-  const valid: ReadonlyArray<string> = ['tools', 'onboarding', 'snapshots', 'logs', 'simulator']
-  if (!tab || !valid.includes(tab)) return <Navigate to="/dev/tools" replace />
+  if (!tab || !isDevTab(tab)) return <Navigate to="/dev/tools" replace />
   return (
     <AdoptStatic
       spec={{
@@ -198,7 +203,7 @@ function AdoptDev() {
 
 function AdoptAutomation() {
   const { section } = useParams<{ section: string }>()
-  const valid: ReadonlyArray<string> = ['runs', 'api', 'flow', 'webhook']
+  const valid: ReadonlyArray<string> = ['runs', 'api']
   if (!section || !valid.includes(section)) return <Navigate to="/automation/runs" replace />
   return (
     <AdoptStatic
@@ -226,6 +231,12 @@ function AdoptChatWorkspace() {
   return <AdoptStatic spec={{ kind: 'workspace', params }} />
 }
 
+function AdoptWorkspaceManager() {
+  const { sessionId } = useParams<{ sessionId: string }>()
+  if (!sessionId) return <Navigate to="/chat/manager" replace />
+  return <AdoptStatic spec={{ kind: 'workspace-manager', params: { sessionId } }} />
+}
+
 function AdoptTemplateDetail() {
   const { name } = useParams<{ name: string }>()
   if (!name) return <Navigate to="/workspaces/templates" replace />
@@ -234,10 +245,63 @@ function AdoptTemplateDetail() {
 
 function AdoptFileViewer() {
   const { wsId, path } = useParams<{ wsId: string; path: string }>()
+  const [search] = useSearchParams()
   if (!wsId || !path) return <Navigate to="/workspaces" replace />
+  const returnSessionId = search.get('sessionId') ?? undefined
   // `path` arrives already URL-decoded by react-router (toUrl encodes it as
   // a single segment), so it may contain slashes — pass through verbatim.
-  return <AdoptStatic spec={{ kind: 'file-viewer', params: { wsId, path } }} />
+  return (
+    <AdoptStatic
+      spec={{
+        kind: 'file-viewer',
+        params: {
+          wsId,
+          path,
+          ...(returnSessionId ? { returnSessionId } : {}),
+        },
+      }}
+    />
+  )
+}
+
+function AdoptChatFileViewer() {
+  const { wsId, path } = useParams<{ wsId: string; path: string }>()
+  const [search] = useSearchParams()
+  if (!wsId || !path) return <Navigate to="/chat" replace />
+  const returnSessionId = search.get('sessionId') ?? undefined
+  return (
+    <AdoptStatic
+      spec={{
+        kind: 'file-viewer',
+        params: {
+          wsId,
+          path,
+          source: 'chat',
+          ...(returnSessionId ? { returnSessionId } : {}),
+        },
+      }}
+    />
+  )
+}
+
+function AdoptTrackedFileViewer() {
+  const { wsId, path } = useParams<{ wsId: string; path: string }>()
+  const [search] = useSearchParams()
+  if (!wsId || !path) return <Navigate to="/tracked" replace />
+  const returnTrackedName = search.get('entity') ?? undefined
+  return (
+    <AdoptStatic
+      spec={{
+        kind: 'file-viewer',
+        params: {
+          wsId,
+          path,
+          source: 'tracked',
+          ...(returnTrackedName ? { returnTrackedName } : {}),
+        },
+      }}
+    />
+  )
 }
 
 function AdoptDesignProject() {
@@ -266,12 +330,19 @@ function specToSection(spec: ViewSpec): ActivitySection {
     case 'tracked':            return 'tracked'
     case 'tracked-issue-detail': return 'tracked'
     case 'chat-landing':       return 'chat'
+    case 'workspace-manager':  return 'chat'
     case 'workspace':          return spec.params.source === 'chat' ? 'chat' : 'workspaces'
+    case 'file-viewer':
+      return spec.params.source === 'chat'
+        ? 'chat'
+        : spec.params.source === 'tracked'
+          ? 'tracked'
+          : 'workspaces'
     case 'workspace-list':
     case 'template-catalog':
-    case 'template-detail':
-    case 'file-viewer':        return 'workspaces'
+    case 'template-detail':    return 'workspaces'
     case 'trading-as-git':     return 'trading-as-git'
+    case 'connectors':         return 'connectors'
     case 'portfolio':
     case 'uta-detail':         return 'portfolio'
     case 'issue':

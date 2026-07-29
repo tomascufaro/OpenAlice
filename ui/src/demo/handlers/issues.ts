@@ -1,8 +1,10 @@
 import { http, HttpResponse } from 'msw'
+import type { ModelReasoningEffort } from '../../api'
 import type { IssuePriority, IssueStatus } from '../../api/issues'
 import {
   demoIssueAddComment,
   demoIssueDetail,
+  demoIssueRetry,
   demoIssueUpdate,
   demoIssuesSnapshot,
 } from '../fixtures/issues'
@@ -25,6 +27,15 @@ const ISSUE_PRIORITIES = [
   'low',
   'none',
 ] as const satisfies readonly IssuePriority[]
+const MODEL_REASONING_EFFORTS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const satisfies readonly ModelReasoningEffort[]
 
 const COMMENT_MAX = 16_000
 
@@ -60,12 +71,23 @@ export const issuesHandlers = [
       priority?: unknown
       assignee?: unknown
       agent?: unknown
+      model?: unknown
+      effort?: unknown
+      what?: unknown
     } | null
     if (!body || typeof body !== 'object') {
       return HttpResponse.json({ error: 'invalid_body' }, { status: 400 })
     }
 
-    const patch: { status?: IssueStatus; priority?: IssuePriority; assignee?: string; agent?: string | null } = {}
+    const patch: {
+      status?: IssueStatus
+      priority?: IssuePriority
+      assignee?: string
+      agent?: string | null
+      model?: string | null
+      effort?: ModelReasoningEffort | null
+      what?: string
+    } = {}
     if (body.status !== undefined) {
       if (!ISSUE_STATUSES.includes(body.status as IssueStatus)) {
         return HttpResponse.json({ error: 'invalid_status' }, { status: 400 })
@@ -97,11 +119,38 @@ export const issuesHandlers = [
         patch.agent = agent
       }
     }
+    if (body.model !== undefined) {
+      if (body.model === null || body.model === '') {
+        patch.model = null
+      } else if (typeof body.model !== 'string' || !body.model.trim()) {
+        return HttpResponse.json({ error: 'invalid_model' }, { status: 400 })
+      } else {
+        patch.model = body.model.trim()
+      }
+    }
+    if (body.effort !== undefined) {
+      if (body.effort === null || body.effort === '') {
+        patch.effort = null
+      } else if (!MODEL_REASONING_EFFORTS.includes(body.effort as ModelReasoningEffort)) {
+        return HttpResponse.json({ error: 'invalid_effort' }, { status: 400 })
+      } else {
+        patch.effort = body.effort as ModelReasoningEffort
+      }
+    }
+    if (body.what !== undefined) {
+      if (typeof body.what !== 'string' || !body.what.trim()) {
+        return HttpResponse.json({ error: 'invalid_what' }, { status: 400 })
+      }
+      patch.what = body.what.trim()
+    }
     if (
       patch.status === undefined &&
       patch.priority === undefined &&
       patch.assignee === undefined &&
       patch.agent === undefined
+      && patch.model === undefined
+      && patch.effort === undefined
+      && patch.what === undefined
     ) {
       return HttpResponse.json({ error: 'no_fields' }, { status: 400 })
     }
@@ -127,5 +176,15 @@ export const issuesHandlers = [
     return detail
       ? HttpResponse.json(detail)
       : HttpResponse.json({ error: 'not_found' }, { status: 404 })
+  }),
+
+  http.post('/api/issues/:wsId/:id/retry', ({ params }) => {
+    const detail = demoIssueRetry(String(params.wsId), String(params.id))
+    return detail
+      ? HttpResponse.json(detail, { status: 202 })
+      : HttpResponse.json({
+          error: 'not_retryable',
+          message: 'Only the latest failed or interrupted scheduled run can be retried.',
+        }, { status: 409 })
   }),
 ]

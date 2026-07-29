@@ -5,6 +5,8 @@ import { homedir } from 'os'
 import { newsCollectorSchema } from '../domain/news/config.js'
 import { runMigrations } from '../migrations/runner.js'
 import { dataPath } from '@/core/paths.js'
+import { withConfigBootstrapLock } from './config-bootstrap-lock.js'
+import { parseDuration } from './duration.js'
 import { isSealedEnvelope, seal, unseal } from './sealing.js'
 
 const CONFIG_DIR = dataPath('config')
@@ -114,10 +116,15 @@ export type CredentialAuthType = z.infer<typeof credentialAuthTypeEnum>
  * derivable from baseUrl alone — OpenAI Chat Completions and Responses share
  * one base URL (api.openai.com/v1), so only this field distinguishes them. Also
  * tells injection how to configure the consuming adapter. Mirrors the
- * `WireShape` union in ai-providers/preset-catalog.ts (kept in sync by hand —
- * 3 stable values; core must not depend on the ai-providers layer).
+ * `WireShape` union in ai-providers/preset-catalog.ts (kept in sync by hand;
+ * core must not depend on the ai-providers layer).
  */
-export const credentialWireShapeEnum = z.enum(['anthropic', 'openai-chat', 'openai-responses'])
+export const credentialWireShapeEnum = z.enum([
+  'anthropic',
+  'google-generative-ai',
+  'openai-chat',
+  'openai-responses',
+])
 export type CredentialWireShape = z.infer<typeof credentialWireShapeEnum>
 
 export const credentialSchema = z.object({
@@ -176,6 +183,14 @@ export function credentialWires(cred: Credential): Partial<Record<CredentialWire
 export const workspaceCredentialDefaultSchema = z.object({
   credentialSlug: z.string(),
   model: z.string().optional(),
+  /** Optional explicit protocol when a credential exposes more than one wire. */
+  wireShape: credentialWireShapeEnum.optional(),
+  /** Optional model-specific context preference for Pi/opencode. */
+  contextWindow: z.number().positive().optional(),
+  /** Unknown-model reasoning override for Pi/opencode; known models auto-resolve. */
+  reasoning: z.boolean().optional(),
+  /** Model id the unknown-model override was decided for. */
+  reasoningModel: z.string().optional(),
 })
 export type WorkspaceCredentialDefault = z.infer<typeof workspaceCredentialDefaultSchema>
 
@@ -302,7 +317,7 @@ const marketDataSchema = z.object({
    *  (e.g. 'eastmoney' for CN A-share Chinese-name search + 前复权 K-line).
    *  yfinance stays the always-on global default; these are purely additive,
    *  surfaced as extra searchBars candidates in their own namespace, never a
-   *  replacement. Each name must be a registered OpenTypeBB provider. */
+   *  replacement. Each name must be registered by the embedded provider layer. */
   extraVendors: z.array(z.string()).default([]),
   providerKeys: z.object({
     fred: z.string().optional(),
@@ -326,43 +341,26 @@ const marketDataSchema = z.object({
   }).default({ enabled: true, baseUrl: 'https://traderhub.openalice.ai' }),
 })
 
-const compactionSchema = z.object({
-  maxContextTokens: z.number().default(200_000),
-  maxOutputTokens: z.number().default(20_000),
-  autoCompactBuffer: z.number().default(13_000),
-  microcompactKeepRecent: z.number().default(3),
-})
-
-/**
- * MCP server config — exposes OpenAlice's ToolCenter to external MCP
- * clients (Claude Desktop, codex inside workspaces, etc.). Lives at the
- * top level of Config rather than under `connectors:` because it's an
- * export direction (ToolCenter → outside), not a chat-input connector.
- * `connectors.mcpAsk` is the actual chat-shaped MCP-as-input flavour
- * and stays in connectors.
- */
+/** MCP server config — exports OpenAlice's ToolCenter to MCP clients. */
 const mcpSchema = z.object({
   enabled: z.boolean().default(false),
   port: z.number().int().positive().default(3001),
 }).default({ enabled: false, port: 3001 })
 
-const connectorsSchema = z.object({
-  web: z.object({ port: z.number().int().positive().default(3002) }).default({ port: 3002 }),
-  mcpAsk: z.object({
-    enabled: z.boolean().default(false),
-    port: z.number().int().positive().optional(),
-  }).default({ enabled: false }),
-  telegram: z.object({
-    enabled: z.boolean().default(false),
-    botToken: z.string().optional(),
-    botUsername: z.string().optional(),
-    chatIds: z.array(z.number()).default([]),
-  }).default({ enabled: false, chatIds: [] }),
+/** Local listeners are transport configuration, not external connectors. */
+const portsSchema = z.object({
+  web: z.number().int().positive().default(3002),
 })
 
 const snapshotSchema = z.object({
   enabled: z.boolean().default(true),
-  every: z.string().default('15m'),
+  every: z.string()
+    .transform((value) => value.trim())
+    .refine(
+      (value) => parseDuration(value) !== null,
+      'Expected a positive duration such as "15m", "1h", or "2h15m"',
+    )
+    .default('15m'),
 })
 
 export const keylessDataSourceSchema = z.enum(['binance', 'okx', 'bybit'])
@@ -398,23 +396,6 @@ export const toolsSchema = z.object({
   /** Tool names that are disabled. Tools not listed are enabled by default. */
   disabled: z.array(z.string()).default([]),
 })
-
-const webhookTokenSchema = z.object({
-  /** Human-readable label (used in logs / admin UI; not a secret). */
-  id: z.string().min(1),
-  /** The bearer secret. Opaque string — treat as high-entropy. */
-  token: z.string().min(1),
-  /** Epoch ms when created. Metadata only, used for rotation. */
-  createdAt: z.number().int().nonnegative().default(() => Date.now()),
-})
-
-export const webhookSchema = z.object({
-  /** List of accepted bearer tokens for POST /api/events/ingest. Empty = endpoint rejects everything (503). */
-  tokens: z.array(webhookTokenSchema).default([]),
-})
-
-export type WebhookToken = z.infer<typeof webhookTokenSchema>
-export type WebhookConfig = z.infer<typeof webhookSchema>
 
 export const webSubchannelSchema = z.object({
   /** URL-safe identifier. Used as session path segment: data/sessions/web/{id}.jsonl */
@@ -495,15 +476,13 @@ export type Config = {
   crypto: z.infer<typeof cryptoSchema>
   securities: z.infer<typeof securitiesSchema>
   marketData: z.infer<typeof marketDataSchema>
-  compaction: z.infer<typeof compactionSchema>
   aiProvider: z.infer<typeof aiProviderSchema>
   snapshot: z.infer<typeof snapshotSchema>
   trading: z.infer<typeof tradingSchema>
   mcp: z.infer<typeof mcpSchema>
-  connectors: z.infer<typeof connectorsSchema>
+  ports: z.infer<typeof portsSchema>
   news: z.infer<typeof newsCollectorSchema>
   tools: z.infer<typeof toolsSchema>
-  webhook: z.infer<typeof webhookSchema>
 }
 
 // ==================== Loader ====================
@@ -536,12 +515,16 @@ async function parseAndSeed<T>(filename: string, schema: z.ZodType<T>, raw: unkn
 }
 
 export async function loadConfig(): Promise<Config> {
+  return withConfigBootstrapLock(loadConfigUnlocked)
+}
+
+async function loadConfigUnlocked(): Promise<Config> {
   // Run pending migrations before reading any section. Each migration is
   // recorded in data/config/_meta.json; the runner is a no-op when nothing
   // is pending. See src/migrations/INDEX.md for the full list.
   await runMigrations()
 
-  const files = ['engine.json', 'agent.json', 'crypto.json', 'securities.json', 'market-data.json', 'compaction.json', 'ai-provider-manager.json', 'snapshot.json', 'mcp.json', 'connectors.json', 'news.json', 'tools.json', 'webhook.json', 'trading.json'] as const
+  const files = ['engine.json', 'agent.json', 'crypto.json', 'securities.json', 'market-data.json', 'ai-provider-manager.json', 'snapshot.json', 'mcp.json', 'ports.json', 'news.json', 'tools.json', 'trading.json'] as const
   const raws = await Promise.all(files.map((f) => loadJsonFile(f)))
 
   const config: Config = {
@@ -550,15 +533,13 @@ export async function loadConfig(): Promise<Config> {
     crypto:        await parseAndSeed(files[2], cryptoSchema, raws[2]),
     securities:    await parseAndSeed(files[3], securitiesSchema, raws[3]),
     marketData:    await applyGlobalProviderKeys(await parseAndSeed(files[4], marketDataSchema, raws[4])),
-    compaction:    await parseAndSeed(files[5], compactionSchema, raws[5]),
-    aiProvider:    await parseAndSeed(files[6], aiProviderSchema, raws[6]),
-    snapshot:      await parseAndSeed(files[7], snapshotSchema, raws[7]),
-    mcp:           await parseAndSeed(files[8], mcpSchema, raws[8]),
-    connectors:    await parseAndSeed(files[9], connectorsSchema, raws[9]),
-    news:          await parseAndSeed(files[10], newsCollectorSchema, raws[10]),
-    tools:         await parseAndSeed(files[11], toolsSchema, raws[11]),
-    webhook:       await parseAndSeed(files[12], webhookSchema, raws[12]),
-    trading:       await parseAndSeed(files[13], tradingSchema, raws[13]),
+    aiProvider:    await parseAndSeed(files[5], aiProviderSchema, raws[5]),
+    snapshot:      await parseAndSeed(files[6], snapshotSchema, raws[6]),
+    mcp:           await parseAndSeed(files[7], mcpSchema, raws[7]),
+    ports:         await parseAndSeed(files[8], portsSchema, raws[8]),
+    news:          await parseAndSeed(files[9], newsCollectorSchema, raws[9]),
+    tools:         await parseAndSeed(files[10], toolsSchema, raws[10]),
+    trading:       await parseAndSeed(files[11], tradingSchema, raws[11]),
   }
 
   // Spawn-time-fixed channel: when guardian (Electron main) spawns the
@@ -568,7 +549,7 @@ export async function loadConfig(): Promise<Config> {
   // taken). In dev mode (no guardian) both env vars are unset and the
   // file value flows through unchanged.
   const envWebPort = parseEnvPort(process.env['OPENALICE_WEB_PORT'])
-  if (envWebPort !== null) config.connectors.web.port = envWebPort
+  if (envWebPort !== null) config.ports.web = envWebPort
   const envMcpPort = parseEnvPort(process.env['OPENALICE_MCP_PORT'])
   if (envMcpPort !== null) config.mcp.port = envMcpPort
 
@@ -855,7 +836,7 @@ export async function readMarketDataConfig() {
  * into the local section (which would defeat the global-wins-on-update intent;
  * see [[project_global_data_root_sealed_creds]]). Writes directly, bypassing
  * `writeConfigSection`'s providerKeys→global mirror, which is irrelevant to a
- * vendor-list edit. Because the opentypebb resolver re-reads market-data.json
+ * vendor-list edit. Because the embedded provider resolver re-reads market-data.json
  * per request, the change takes effect on the next search with no restart.
  */
 export async function updateExtraVendors(
@@ -877,27 +858,6 @@ export async function readToolsConfig() {
     return toolsSchema.parse(raw)
   } catch {
     return toolsSchema.parse({})
-  }
-}
-
-/** Read connectors config from disk (called per-request for hot-reload). */
-export async function readConnectorsConfig() {
-  try {
-    const raw = JSON.parse(await readFile(resolve(CONFIG_DIR, 'connectors.json'), 'utf-8'))
-    return connectorsSchema.parse(raw)
-  } catch {
-    return connectorsSchema.parse({})
-  }
-}
-
-/** Read webhook config from disk (called per-request so token rotation
- *  takes effect without restart). */
-export async function readWebhookConfig() {
-  try {
-    const raw = JSON.parse(await readFile(resolve(CONFIG_DIR, 'webhook.json'), 'utf-8'))
-    return webhookSchema.parse(raw)
-  } catch {
-    return webhookSchema.parse({})
   }
 }
 
@@ -946,10 +906,18 @@ export async function addCredential(credential: Credential): Promise<string> {
     c.apiKey === validated.apiKey,
   )
   if (match) {
-    // Upgrade the existing record's wires/endpoint in place (don't duplicate).
+    // Upgrade the existing record's wire capabilities in place (don't
+    // duplicate). A per-Workspace "save to Alice" contributes one shape at a
+    // time, so merge rather than replace or a later save would silently erase
+    // the other protocol selected by Workspace defaults.
     const existing = match[1]
+    const mergedWires = {
+      ...credentialWires(existing),
+      ...credentialWires(validated),
+    }
     config.credentials[match[0]] = {
       ...validated,
+      ...(Object.keys(mergedWires).length ? { wires: mergedWires } : {}),
       ...(validated.label ?? existing.label ? { label: validated.label ?? existing.label } : {}),
       ...(validated.lastModel ?? existing.lastModel ? { lastModel: validated.lastModel ?? existing.lastModel } : {}),
     }
@@ -1023,6 +991,21 @@ export async function writeWorkspaceCredentialDefaults(
   await writeFile(resolve(CONFIG_DIR, 'ai-provider-manager.json'), JSON.stringify(config, null, 2) + '\n')
 }
 
+/** Replace the per-agent defaults that seed newly created Workspaces. */
+export async function writeWorkspaceCreationDefaults(
+  defaults: Record<string, WorkspaceCredentialDefault>,
+): Promise<void> {
+  const config = await readAIProviderConfig()
+  const cleaned: Record<string, WorkspaceCredentialDefault> = {}
+  for (const [agentId, def] of Object.entries(defaults)) {
+    const parsed = workspaceCredentialDefaultSchema.parse(def)
+    if (parsed.credentialSlug) cleaned[agentId] = parsed
+  }
+  config.workspaceCredentialDefaults = cleaned
+  await mkdir(CONFIG_DIR, { recursive: true })
+  await writeFile(resolve(CONFIG_DIR, 'ai-provider-manager.json'), JSON.stringify(config, null, 2) + '\n')
+}
+
 export async function readWorkspaceDefaultAgent(): Promise<string | null> {
   const config = await readAIProviderConfig()
   return config.workspaceDefaultAgent ?? null
@@ -1057,15 +1040,13 @@ const sectionSchemas: Record<ConfigSection, z.ZodTypeAny> = {
   crypto: cryptoSchema,
   securities: securitiesSchema,
   marketData: marketDataSchema,
-  compaction: compactionSchema,
   aiProvider: aiProviderSchema,
   snapshot: snapshotSchema,
   trading: tradingSchema,
   mcp: mcpSchema,
-  connectors: connectorsSchema,
+  ports: portsSchema,
   news: newsCollectorSchema,
   tools: toolsSchema,
-  webhook: webhookSchema,
 }
 
 const sectionFiles: Record<ConfigSection, string> = {
@@ -1074,15 +1055,13 @@ const sectionFiles: Record<ConfigSection, string> = {
   crypto: 'crypto.json',
   securities: 'securities.json',
   marketData: 'market-data.json',
-  compaction: 'compaction.json',
   aiProvider: 'ai-provider-manager.json',
   snapshot: 'snapshot.json',
   trading: 'trading.json',
   mcp: 'mcp.json',
-  connectors: 'connectors.json',
+  ports: 'ports.json',
   news: 'news.json',
   tools: 'tools.json',
-  webhook: 'webhook.json',
 }
 
 /** All valid config section names (derived from sectionSchemas). */

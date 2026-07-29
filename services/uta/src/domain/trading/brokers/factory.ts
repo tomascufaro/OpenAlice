@@ -13,7 +13,7 @@
  */
 
 import type { IBroker } from './types.js'
-import { BROKER_ENGINE_REGISTRY } from './registry.js'
+import { loadBrokerEngine } from './registry.js'
 import { getBrokerPreset } from '@traderalice/uta-protocol'
 import type { UTAConfig } from '@/core/config.js'
 import type { FxService } from '../fx-service.js'
@@ -27,15 +27,11 @@ export interface BrokerServices {
 }
 
 /** Create an IBroker from account config via preset resolution. */
-export function createBroker(config: UTAConfig, services?: BrokerServices): IBroker {
+export async function createBroker(config: UTAConfig, services?: BrokerServices): Promise<IBroker> {
   const preset = getBrokerPreset(config.presetId)
   const presetData = preset.zodSchema.parse(config.presetConfig) as Record<string, unknown>
   const engineConfig = preset.toEngineConfig(presetData)
 
-  const entry = BROKER_ENGINE_REGISTRY[preset.engine]
-  if (!entry) {
-    throw new Error(`Unknown broker engine "${preset.engine}" referenced by preset "${preset.id}"`)
-  }
   const baseConfig = {
     id: config.id,
     label: config.label,
@@ -43,9 +39,19 @@ export function createBroker(config: UTAConfig, services?: BrokerServices): IBro
     // mode (CCXT) can skip credential validation; others ignore it.
     brokerConfig: { ...engineConfig, keyless: config.keyless ?? false },
   }
-  const broker = preset.engine === 'sim'
-    ? SimBroker.fromConfig(baseConfig, { quoteFetcher: services?.simQuoteFetcher })
-    : entry.fromConfig(baseConfig)
+
+  // Sim is a built-in local engine (like mock) rather than an installable broker
+  // pack, and needs the extra quoteFetcher option loadBrokerEngine's generic
+  // createBroker(config) signature has no room for — construct it directly.
+  let broker: IBroker
+  if (preset.engine === 'sim') {
+    SimBroker.configSchema.parse(engineConfig)
+    broker = SimBroker.fromConfig(baseConfig, { quoteFetcher: services?.simQuoteFetcher })
+  } else {
+    const entry = await loadBrokerEngine(preset.engine)
+    entry.configSchema.parse(engineConfig)
+    broker = entry.createBroker(baseConfig)
+  }
 
   // Multi-currency-aware brokers (e.g. Longbridge) opt in via setFxService.
   // Single-currency brokers don't expose this method and skip the call.

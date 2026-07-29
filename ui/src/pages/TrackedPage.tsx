@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { TrendingUp, Hash, FileText, ListChecks } from 'lucide-react'
+import { TrendingUp, Hash, FileText, ListChecks, CircleAlert } from 'lucide-react'
 import { PageHeader } from '../components/PageHeader'
 import { PageLoading, Skeleton } from '../components/StateViews'
 import { api } from '../api'
@@ -27,27 +27,38 @@ export function TrackedPage() {
 
   const [detail, setDetail] = useState<EntityDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState(false)
+  const [detailRequest, setDetailRequest] = useState(0)
   useEffect(() => {
     if (!selectedName) {
       setDetail(null)
       setDetailLoading(false)
+      setDetailError(false)
       return
     }
     let cancelled = false
     setDetail(null)
     setDetailLoading(true)
+    setDetailError(false)
     api.entities
       .get(selectedName)
       .then((d) => {
-        if (!cancelled) { setDetail(d); setDetailLoading(false) }
+        if (!cancelled) {
+          setDetail(d)
+          setDetailLoading(false)
+        }
       })
       .catch(() => {
-        if (!cancelled) { setDetail(null); setDetailLoading(false) }
+        if (!cancelled) {
+          setDetail(null)
+          setDetailLoading(false)
+          setDetailError(true)
+        }
       })
     return () => {
       cancelled = true
     }
-  }, [selectedName])
+  }, [selectedName, detailRequest])
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -61,13 +72,43 @@ export function TrackedPage() {
         ) : entities.length === 0 ? (
           <EmptyState />
         ) : !selectedName ? (
-          <div className="px-6 py-8 text-text-muted text-sm">{t('tracked.selectFromSidebar')}</div>
-        ) : detailLoading || !detail ? (
+          <div className="px-6 py-8 text-muted-foreground text-sm">{t('tracked.selectFromSidebar')}</div>
+        ) : detailLoading ? (
           <PageLoading />
+        ) : detailError || !detail ? (
+          <DetailLoadError
+            name={selectedName}
+            onRetry={() => setDetailRequest((request) => request + 1)}
+          />
         ) : (
           <Detail detail={detail} />
         )}
       </div>
+    </div>
+  )
+}
+
+function DetailLoadError({ name, onRetry }: { name: string; onRetry: () => void }) {
+  const { t } = useTranslation()
+  return (
+    <div
+      role="alert"
+      className="mx-auto flex max-w-[520px] flex-col items-center px-6 py-16 text-center"
+    >
+      <CircleAlert size={24} strokeWidth={1.75} className="text-destructive" aria-hidden />
+      <h2 className="mt-3 text-[15px] font-medium text-foreground">
+        {t('tracked.detailLoadErrorTitle', { name })}
+      </h2>
+      <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+        {t('tracked.detailLoadErrorDescription')}
+      </p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="oa-pressable mt-4 rounded-md border border-border bg-secondary px-3 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-muted"
+      >
+        {t('common.retry')}
+      </button>
     </div>
   )
 }
@@ -81,7 +122,7 @@ function TrackedListSkeleton() {
       {widths.map((w, i) => (
         <div
           key={i}
-          className="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-border bg-bg-tertiary/30"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-border bg-muted/30"
         >
           <Skeleton className="h-3.5 w-3.5 rounded shrink-0" />
           <Skeleton className={`h-3.5 ${w} rounded`} />
@@ -97,12 +138,12 @@ function EmptyState() {
   const { t } = useTranslation()
   return (
     <div className="px-6 py-16 text-center max-w-[520px] mx-auto">
-      <div className="text-[15px] text-text mb-2">{t('tracked.nothingTrackedYet')}</div>
-      <p className="text-[13px] text-text-muted leading-relaxed">
+      <div className="text-[15px] text-foreground mb-2">{t('tracked.nothingTrackedYet')}</div>
+      <p className="text-[13px] text-muted-foreground leading-relaxed">
         As an agent works, it registers the assets and topics worth following with the
-        <code className="mx-1 px-1 py-0.5 rounded bg-bg-tertiary text-[11px]">entity_upsert</code>
+        <code className="mx-1 px-1 py-0.5 rounded bg-muted text-[11px]">entity_upsert</code>
         tool, and links to them from its notes with
-        <code className="mx-1 px-1 py-0.5 rounded bg-bg-tertiary text-[11px]">[[name]]</code>. They
+        <code className="mx-1 px-1 py-0.5 rounded bg-muted text-[11px]">[[name]]</code>. They
         show up here as a running watchlist — each with the notes that reference it.
       </p>
     </div>
@@ -116,25 +157,29 @@ function Detail({ detail }: { detail: EntityDetail }) {
   return (
     <div className="max-w-[820px] mx-auto py-6 px-4 md:px-8">
       <div className="flex items-center gap-2.5 mb-2">
-        <Icon size={20} strokeWidth={1.75} className="shrink-0 text-text-muted" aria-hidden />
-        <h2 className="text-[20px] font-semibold font-mono text-text">{entity.name}</h2>
-        <span className="text-[11px] px-1.5 py-0.5 rounded bg-bg-tertiary text-text-muted uppercase tracking-wide">
+        <Icon size={20} strokeWidth={1.75} className="shrink-0 text-muted-foreground" aria-hidden />
+        <h2 className="text-[20px] font-semibold font-mono text-foreground">{entity.name}</h2>
+        <span className="text-[11px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground uppercase tracking-wide">
           {entity.type}
         </span>
       </div>
-      <p className="text-[14px] text-text-muted leading-relaxed mb-6">{entity.description}</p>
+      <p className="text-[14px] text-muted-foreground leading-relaxed mb-6">{entity.description}</p>
 
-      <div className="text-[11px] font-medium text-text-muted/60 uppercase tracking-wider mb-3">
+      <div className="text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider mb-3">
         {t('tracked.referencedIn', { count: backlinks.length })}
       </div>
       {backlinks.length === 0 ? (
-        <div className="text-[13px] text-text-muted/70 italic">
+        <div className="text-[13px] text-muted-foreground/70 italic">
           No notes link <span className="font-mono">[[{entity.name}]]</span> yet.
         </div>
       ) : (
         <div className="flex flex-col gap-1">
           {backlinks.map((b, i) => (
-            <BacklinkRow key={`${b.workspaceId}:${b.path}:${i}`} backlink={b} />
+            <BacklinkRow
+              key={`${b.workspaceId}:${b.path}:${i}`}
+              backlink={b}
+              trackedName={entity.name}
+            />
           ))}
         </div>
       )}
@@ -157,7 +202,13 @@ function issueIdFromPath(path: string): string | null {
   return id && !id.includes('/') ? id : null
 }
 
-function BacklinkRow({ backlink }: { backlink: Backlink }) {
+function BacklinkRow({
+  backlink,
+  trackedName,
+}: {
+  backlink: Backlink
+  trackedName: string
+}) {
   const openOrFocus = useWorkspace((s) => s.openOrFocus)
   const setSidebar = useWorkspace((s) => s.setSidebar)
   const issueId = issueIdFromPath(backlink.path)
@@ -172,10 +223,18 @@ function BacklinkRow({ backlink }: { backlink: Backlink }) {
       })
       return
     }
-    // Plain note → the dedicated file viewer (VS Code-style), at its exact path.
+    // Plain note stays owned by Tracked. Preserve the selected entity so both
+    // the page Back action and a copied/deep-linked URL return to the same
+    // entity/backlink context instead of falling into System → Workspaces.
+    setSidebar('tracked')
     openOrFocus({
       kind: 'file-viewer',
-      params: { wsId: backlink.workspaceId, path: backlink.path },
+      params: {
+        wsId: backlink.workspaceId,
+        path: backlink.path,
+        source: 'tracked',
+        returnTrackedName: trackedName,
+      },
     })
   }
   const Icon = issueId ? ListChecks : FileText
@@ -185,16 +244,16 @@ function BacklinkRow({ backlink }: { backlink: Backlink }) {
       type="button"
       onClick={open}
       title={issueId ? `Open issue ${issueId}` : `Open ${backlink.path}`}
-      className="group flex items-center gap-2.5 px-3 py-2 rounded-lg border border-border bg-bg-tertiary/30 hover:bg-bg-tertiary hover:border-accent/40 transition-colors text-left"
+      className="group flex items-center gap-2.5 px-3 py-2 rounded-lg border border-border bg-muted/30 hover:bg-muted hover:border-primary/40 transition-colors text-left"
     >
       <Icon
         size={14}
         strokeWidth={1.75}
-        className="shrink-0 text-text-muted/70 group-hover:text-accent transition-colors"
+        className="shrink-0 text-muted-foreground/70 group-hover:text-primary transition-colors"
         aria-hidden
       />
-      <span className="flex-1 min-w-0 truncate font-mono text-[12px] text-text">{label}</span>
-      <span className="shrink-0 text-[11px] text-text-muted/60">{backlink.workspaceTag}</span>
+      <span className="flex-1 min-w-0 truncate font-mono text-[12px] text-foreground">{label}</span>
+      <span className="shrink-0 text-[11px] text-muted-foreground/60">{backlink.workspaceTag}</span>
     </button>
   )
 }

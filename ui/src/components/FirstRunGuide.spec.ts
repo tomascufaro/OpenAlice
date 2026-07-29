@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  FIRST_RUN_STEP_KEYS,
   buildFirstRunGuideAccess,
   buildFirstRunGuideModel,
   parseFirstRunStepOverride,
@@ -16,12 +17,32 @@ const liteStatus: TradingServiceStatus = {
   hasUTAConfig: false,
 }
 
+const readyPiRuntime = {
+  agents: {
+    pi: {
+      agent: 'pi',
+      displayName: 'Pi',
+      installed: true,
+      binPath: '/vendor/pi/pi',
+      status: 'ready',
+      ready: true,
+      source: 'launcher-vault',
+      checkedAt: '2026-07-08T00:00:00.000Z',
+      durationMs: 12,
+      message: 'Pi replied to the readiness probe.',
+    },
+  },
+  overallReady: true,
+  checkedAt: '2026-07-08T00:00:00.000Z',
+} as const
+
 describe('buildFirstRunGuideModel', () => {
-  it('treats an installed Pi runtime plus a compatible vault credential as usable', () => {
+  it('treats a ready Pi runtime probe as usable', () => {
     const model = buildFirstRunGuideModel({
       agents: [
         { id: 'pi', displayName: 'Pi', kind: 'agent', installed: true },
       ],
+      runtimeReadiness: readyPiRuntime,
       credentials: [{ wires: { 'openai-chat': '' } }],
       tradingStatus: liteStatus,
       utas: [],
@@ -34,7 +55,25 @@ describe('buildFirstRunGuideModel', () => {
     expect(model.hasUsableAiChain).toBe(true)
     expect(model.runtimeLabel).toBe('1 runtime installed')
     expect(model.shouldShow).toBe(true)
-    expect(model.aiAccessLabel).toBe('AI key ready')
+    expect(model.aiAccessLabel).toBe('Agent runtime ready')
+  })
+
+  it('does not treat a compatible vault credential as usable before a runtime probe succeeds', () => {
+    const model = buildFirstRunGuideModel({
+      agents: [
+        { id: 'pi', displayName: 'Pi', kind: 'agent', installed: true },
+      ],
+      runtimeReadiness: null,
+      credentials: [{ wires: { 'openai-chat': '' } }],
+      tradingStatus: liteStatus,
+      utas: [],
+      loaded: true,
+      dismissed: false,
+    })
+
+    expect(model.hasAgentRuntime).toBe(true)
+    expect(model.hasUsableAiChain).toBe(false)
+    expect(model.aiAccessLabel).toBe('Retry runtime test')
   })
 
   it('shows the guide for a fresh Lite install with missing runtimes', () => {
@@ -43,6 +82,7 @@ describe('buildFirstRunGuideModel', () => {
         { id: 'codex', displayName: 'Codex', kind: 'agent', installed: false },
         { id: 'pi', displayName: 'Pi', kind: 'agent', installed: false },
       ],
+      runtimeReadiness: null,
       credentials: [],
       tradingStatus: liteStatus,
       utas: [],
@@ -62,6 +102,7 @@ describe('buildFirstRunGuideModel', () => {
         { id: 'codex', displayName: 'Codex', kind: 'agent', installed: true },
         { id: 'claude', displayName: 'Claude Code', kind: 'agent', installed: true },
       ],
+      runtimeReadiness: null,
       credentials: [],
       tradingStatus: liteStatus,
       utas: [],
@@ -72,8 +113,8 @@ describe('buildFirstRunGuideModel', () => {
     expect(model.hasAgentRuntime).toBe(true)
     expect(model.hasUsableAiChain).toBe(false)
     expect(model.runtimeRows.map((row) => row.accessLabel)).toEqual([
-      'Login check pending',
-      'Login check pending',
+      'Not checked yet',
+      'Not checked yet',
     ])
     expect(model.shouldShow).toBe(true)
   })
@@ -83,6 +124,7 @@ describe('buildFirstRunGuideModel', () => {
       agents: [
         { id: 'pi', displayName: 'Pi', kind: 'agent', installed: true },
       ],
+      runtimeReadiness: null,
       credentials: [],
       tradingStatus: liteStatus,
       utas: [],
@@ -98,6 +140,7 @@ describe('buildFirstRunGuideModel', () => {
       agents: [
         { id: 'pi', displayName: 'Pi', kind: 'agent', installed: true },
       ],
+      runtimeReadiness: readyPiRuntime,
       credentials: [{ wires: { 'openai-chat': '' } }],
       tradingStatus: { ...liteStatus, mode: 'readonly', modeSource: 'config', available: true },
       utas: [],
@@ -113,6 +156,7 @@ describe('buildFirstRunGuideModel', () => {
       agents: [
         { id: 'pi', displayName: 'Pi', kind: 'agent', installed: true },
       ],
+      runtimeReadiness: readyPiRuntime,
       credentials: [{ wires: { 'openai-chat': '' } }],
       tradingStatus: { ...liteStatus, mode: 'pro', modeSource: 'config', available: true, hasUTAConfig: true },
       utas: [],
@@ -125,12 +169,17 @@ describe('buildFirstRunGuideModel', () => {
 })
 
 describe('parseFirstRunStepOverride', () => {
+  it('starts onboarding with language choice', () => {
+    expect(FIRST_RUN_STEP_KEYS[0]).toBe('language')
+  })
+
   it('only accepts onboarding step overrides in onboarding test mode', () => {
     expect(parseFirstRunStepOverride('?onboardingStep=broker', false)).toBeNull()
     expect(parseFirstRunStepOverride('?onboardingStep=broker', true)).toBe('broker')
   })
 
   it('supports short aliases for faster design checks', () => {
+    expect(parseFirstRunStepOverride('?step=locale', true)).toBe('language')
     expect(parseFirstRunStepOverride('?step=runtime', true)).toBe('ai')
     expect(parseFirstRunStepOverride('?onboardingStep=uta', true)).toBe('broker')
     expect(parseFirstRunStepOverride('?step=checklist', true)).toBe('finish')

@@ -1,521 +1,622 @@
 # Managed Workspace Runtime
 
-This note captures the target design for making packaged OpenAlice usable on a
-fresh machine without asking the user to install coding-agent command line
-tools first.
+This guide owns the packaged-desktop runtime contract for Workspace agents.
+Read it before changing desktop packaging, agent discovery, Pi launch behavior,
+the Windows shell/toolchain, or the `OPENALICE_MANAGED_*` environment keys.
 
-The core product rule is simple: a desktop app distribution should not open
-with "please install Node/npm/git/bash/pi". The packaged app should provide the
-minimum managed runtime needed for a Workspace agent to start, edit files, run
-commands, use Git, and call OpenAlice's injected `alice*` tools.
+Related guides: [[docs/project-structure.md]],
+[[docs/model-semantics-and-runtime-injection.md]], and
+[[docs/development-workflow.md]].
 
-## Current Topology
+## Product Contract
 
-OpenAlice is already much closer to this than a normal web app:
+A packaged OpenAlice install must be able to open a Workspace on a fresh
+supported machine without asking the user to install Node, npm, Git, Bash, or
+an agent CLI first.
 
-- Electron main is a Node-capable supervisor, not just a renderer shell.
-- In packaged app mode, Electron starts Alice and UTA with:
-  - `process.execPath`
-  - `ELECTRON_RUN_AS_NODE=1`
-- `OPENALICE_APP_HOME` points at the unpacked app resources
-  (`Contents/Resources/app` on macOS, equivalent resources dir on Windows).
-- `asar` is disabled, so shipped scripts and vendor binaries can be executed
-  from the app resource tree.
-- Built-in workspace templates are plain `.mjs` scripts and run on the
-  Electron-bundled Node with `ELECTRON_RUN_AS_NODE=1`.
-- Workspace bootstrap Git calls currently go through `dugite`.
-- Agent tools are injected through PATH:
-  - `src/workspaces/cli/bin` provides `alice`, `alice-uta`,
-    `alice-workspace`, and `traderhub`.
-  - Native coding agents reach OpenAlice by shelling out to these CLIs.
+The default packaged path is:
 
-This means we do not need user-installed Node. Electron already gives us the
-Node runtime for the backend and workspace bootstrap.
+1. OpenAlice supplies a managed Pi runtime.
+2. The user configures an API-key credential in **Settings → AI Provider**.
+3. OpenAlice injects that credential into the Workspace's Pi config.
+4. Pi starts with the OpenAlice CLIs and shared skills already available.
 
-## Goals
+The runtime and the model credential are separate requirements. Bundling Pi
+removes the CLI/toolchain prerequisite; it does not bundle a model account or
+API key. User-installed Claude Code, Codex, opencode, or Pi remain supported as
+additional runtimes and may use their own subscription login or local config.
 
-- Packaged OpenAlice should include a managed Pi npm runtime on macOS and
-  Windows.
-- Windows packaged OpenAlice should include exactly one managed Git+shell
-  runtime. Do not ship two Git trees.
-- The managed runtime must be discovered through explicit capability/profile
-  injection, not scattered `process.platform` guesses.
-- Existing Workspace semantics stay intact: Pi is a coding runtime, not a
-  trading-permission gate.
-- UTA/trading permissions remain enforced at the OpenAlice/UTA tool boundary.
-- User-installed CLIs may still be used as overrides or fallbacks, but are not
-  required for the default packaged path.
+Plain `pnpm dev` and Docker installs are different deployment shapes. They do
+not inherit the packaged desktop's managed-agent promise and may require an
+agent CLI in the host environment or image. The curl-installed CLI is a third
+shape: it installs the same pinned Pi version under the OpenAlice install root
+and injects `OPENALICE_MANAGED_PI_*` when it starts a source-backed Runtime. It
+still relies on host Node/npm and does not inherit Electron's managed
+Git/Bash/search-tool payload.
 
-## Non-Goals
+### AI credential setup contract
 
-- Do not make Pi responsible for account/trading safety.
-- Do not introduce a second Windows Git runtime beside the existing packaged
-  Git story.
-- Do not require WSL, Git for Windows, Node, npm, pnpm, or system Git as a
-  first-run prerequisite.
-- Do not rewrite every Git call in the first implementation if a smaller step
-  can keep the release path stable.
+**Settings → AI Provider** is an account-to-runtime setup flow, not a generic
+bag of provider fields. The form must make these decisions explicit before a
+key can be saved:
 
-## Platform Strategy
+1. which provider account issued the API key (subscription logins remain in the
+   native Claude Code or Codex CLI);
+2. which region or endpoint owns that key;
+3. which Workspace Agent runtimes can consume the endpoint's declared API
+   protocol;
+4. which exact model ID to test and remember as the credential default; and
+5. whether that exact key + endpoint + protocol + model combination passes a
+   live connection probe.
 
-### macOS
+Provider presets own provider-specific key, region, and model guidance. Runtime
+compatibility is derived from the preset's wire map rather than duplicated as
+editorial copy. Protocol names and raw endpoints belong behind an advanced
+detail unless the user chose **Custom**, where protocol and base URL are
+required inputs. The managed credential path is key-bearing; keyless local
+servers and subscription auth stay in the native CLI's own configuration.
 
-Ship:
+Google Gemini credentials use the native `google-generative-ai` wire in Pi and
+the native Google provider in opencode. Google AI Studio now creates `AQ.`
+authorization keys by default; these and legacy `AIza` keys are sent as
+`x-goog-api-key`. Do not route the built-in Gemini preset through Google's
+OpenAI-compatibility endpoint, whose Bearer authentication does not reliably
+accept authorization keys. The credential probe must use the same native wire
+as the Workspace runtime and fail with an actionable timeout instead of leaving
+the form indefinitely in Testing state.
 
-- Electron Node (already present)
-- managed Pi npm runtime (`@earendil-works/pi-coding-agent`)
-- existing managed Git path for workspace bootstrap and Git UI
+A stored credential may declare more than one wire for the same key. Pi and
+opencode can consume native Google, Anthropic Messages, OpenAI Chat
+Completions, or OpenAI Responses; the per-Workspace editor must therefore let
+the user choose the protocol explicitly and write the matching Pi `api` or
+opencode `@ai-sdk/*` provider. Anthropic-wire credentials also carry their
+header mode through those adapters: first-party Anthropic uses `x-api-key`,
+while confirmed gateway endpoints can use `Authorization: Bearer` without also
+emitting a conflicting API-key header. Old Workspace defaults without an
+explicit protocol keep the runtime preference order for backward compatibility.
 
-Use:
+**Settings → AI Provider → Default Workspace credentials** owns creation-time
+defaults only: per-agent credential, optional protocol, and the opencode/Pi
+context limit. The context default is 256K so users do not cross common
+higher-price tiers implicitly. Changing these settings never rewrites an
+existing Workspace; that Workspace's settings modal remains the explicit
+override surface.
 
-- system `/bin/bash` or `/bin/sh` as the Pi shell path
+Credential access and model semantics are separate inputs. Known model ids
+resolve reasoning behavior and advertised limits from the offline registry;
+the injector caps the selected context policy at the model maximum and leaves
+effort to the native runtime. Only unknown/free-typed models expose an advanced
+reasoning override, and creation defaults bind that assertion to the exact
+model id so it cannot leak across a later model change. Follow
+[[docs/model-semantics-and-runtime-injection.md]] for the full contract.
 
-Rationale:
+Quick Chat must summarize the launch configuration behind its credential pill:
+the effective model ID and every context limit actually declared by the native
+project config are visible before Send. For an existing Workspace these values
+come from its CLI-native config; selecting a different Pi/opencode credential
+previews the model that credential will inject and the global context default.
+Claude Code and Codex Workspace overrides show their model but omit context
+because those native project files do not declare one. The adjacent adjustment
+action opens that Workspace's AI injector for all four runtimes, and falls back
+to AI Provider settings before the first Workspace has been created. Saving the
+Workspace modal refreshes this summary without requiring a page reload.
+Their default remains the CLI's own global login and configuration: Alice never
+chooses the first compatible vault credential simply because one exists. Only
+an explicit Workspace binding or creation default opts into injection.
 
-- macOS already has a usable shell.
-- The missing first-run piece is Pi itself, not Bash.
-- Bundling Pi as a pinned npm runtime keeps the desktop app promise without
-  introducing another native runtime family. Electron already gives us Node.
+Claude Code can place global onboarding and per-project trust screens before an
+interactive seeded prompt even after the same Workspace passes a headless
+provider probe. Its current CLI exposes authentication status but no supported
+status/accept command for these two gates. OpenAlice therefore reads only the
+existing completion booleans in Claude's native state and displays an advisory
+before launch. It never writes those booleans, substitutes a private config
+directory, or treats the advisory as a provider-readiness failure. An unknown
+or changed native state shape fails open and leaves Claude in control.
 
-### Windows
+Provider model catalogs are curated suggestions, not allowlists. Keep the
+free-text model field so a newly released or project-specific model remains
+usable before OpenAlice updates its catalog. Gemini suggestions should contain
+general-purpose text/tool models only; image, Live, TTS, embedding, and managed
+agent model IDs are different product surfaces and do not belong in Quick Chat.
 
-Ship:
+Keep subscription-backed CLI profiles distinct from API-key credentials.
+Claude Code subscription profiles should prefer its native aliases (`default`,
+`best`, `opus`, `sonnet`, `haiku`, and `opusplan`) so the CLI and account tier
+resolve current availability; Anthropic API credentials should suggest exact
+API model IDs. Codex subscription and OpenAI API catalogs may share a model
+family only when official documentation confirms both surfaces support it.
 
-- Electron Node (already present)
-- managed Pi npm runtime (`@earendil-works/pi-coding-agent`)
-- one managed Git for Windows / MinGit style runtime that includes:
-  - `git.exe`
-  - `bash.exe`
-  - `sh.exe`
-  - required MSYS runtime DLLs
-  - coreutils needed by normal agent shell commands
+Editing must round-trip the stored `lastModel` and any endpoint that no longer
+matches a current preset. A catalog refresh must never silently replace either
+value merely because the user opened and saved the form.
 
-Use:
+Credential actions and the default-credential selectors must remain reachable
+without horizontal scrolling at the mobile shell breakpoint. In particular,
+long slugs, endpoint text, and runtime badges may wrap or truncate, but must not
+force Add, Edit, Delete, or selection controls outside the viewport.
 
-- managed `bash.exe` as Pi's `shellPath`
-- the same managed Git runtime for workspace bootstrap, Git UI, and agent shell
-  commands
+### Desktop data-location selection
 
-Rationale:
+The desktop resolves the complete `OPENALICE_HOME` before acquiring runtime
+ownership or starting Alice/UTA. Fresh installs can choose a folder at startup;
+**Settings → General → Data location** can switch with a full restart, reopen a
+recent location, or ask on every launch. A duplicate-owner dialog can choose a
+different home instead of stopping the live instance.
 
-- Pi's npm package does not provide a shell. OpenAlice must provide one.
-- The existing dugite Windows native payload contains Git and POSIX-ish tools,
-  but not a reliable full Bash story.
-- Shipping both dugite's embedded Git and another Git for Windows tree would be
-  wasteful and hard to reason about.
+This launcher preference is stored under Electron `userData`, not inside the
+selected OpenAlice home and not inside portable `data/`. `OPENALICE_HOME` and
+`AQ_LAUNCHER_ROOT` environment overrides lock the desktop selector. Switching
+never copies or moves data. Follow [[docs/data-locations.md]] for precedence,
+concurrent-instance semantics, missing-drive behavior, and verification.
 
-## Runtime Profile
+## Current Platform Payloads
 
-Electron main should compute a normalized runtime profile and inject it into
-Alice/UTA child process env. Alice-side modules should consume this profile
-instead of re-discovering the runtime independently.
+### macOS packaged app
 
-Suggested env keys:
+The app ships:
+
+- Electron's bundled Node runtime;
+- the pinned managed Pi npm runtime under `vendor/pi/`;
+- pinned `fd` and `ripgrep` binaries under `vendor/tools/darwin-<arch>/`;
+- the existing packaged Git path used by Workspace bootstrap.
+
+Pi uses `/bin/bash` when available and falls back to `/bin/sh`. The packaged
+app can still discover user-installed CLIs from common Homebrew, pnpm, and
+user-bin locations when it was launched from Finder with a minimal `PATH`.
+
+### Windows packaged app
+
+The app ships:
+
+- Electron's bundled Node runtime;
+- the same pinned managed Pi npm runtime;
+- pinned `fd` and `ripgrep` binaries under `vendor/tools/win32-<arch>/`;
+- a pinned PortableGit payload under `vendor/git/<platform>-<arch>/`, including
+  `git.exe`, `bash.exe`, `sh.exe`, and the command-line tools Pi needs.
+
+OpenAlice launches managed Pi through Electron in Node mode and gives Pi the
+managed Bash path. Workspace child processes receive the PortableGit command
+directories on `PATH`, so the default packaged flow does not require Node,
+npm, Git for Windows, WSL, or a system agent CLI.
+
+User-installed npm Agent runtimes are resolved without evaluating task prompts
+as command text. Native `.exe`/`.com` binaries run directly; recognizable
+npm/pnpm `.cmd` shims are reduced to their JavaScript entrypoint and run on the
+current Node executable. Other batch shims may use their same-directory
+extensionless POSIX sibling through the resolved Workspace Bash, with the
+prompt retained as a separate argv item and `shell: false`. A batch-only shim
+has no safe unattended fallback and is rejected with
+`unsupported_windows_batch_shim`; only fixed launcher-owned readiness probes
+retain the legacy `cmd.exe` compatibility path.
+
+Workspace-facing OpenAlice commands (`alice`, `alice-workspace`, `traderhub`,
+and `alice-uta`) also do not depend on a host Node installation. Their POSIX
+and Windows launchers execute the explicit `openalice-cli.cjs` payload through
+the Electron executable recorded in `OPENALICE_MANAGED_PI_NODE_PATH`, with
+`ELECTRON_RUN_AS_NODE=1`. When the POSIX launcher is reached from managed Git
+Bash, it normalizes Windows-native launcher and Electron paths through
+`cygpath` before execution and excludes `OPENALICE_TOOL_URL` plus
+`OPENALICE_TOOL_SOCKET` from MSYS environment conversion. In particular,
+`/cli` is an application route and must not become a Git installation path.
+Source/dev falls back to `node` from the contributor environment. Keep the public commands as launchers: executing extensionless
+JavaScript directly makes behavior depend on the host Node version and the
+nearest `package.json` module type.
+
+The Windows package retains dugite's JavaScript execution wrapper but excludes
+its embedded Git payload. `LOCAL_GIT_DIRECTORY` routes every dugite call to the
+same pinned PortableGit tree that supplies Workspace Bash. macOS continues to
+ship dugite's embedded Git because its packaged path does not need a separate
+managed Unix shell payload.
+
+### Windows workspace shell preference
+
+Windows has one machine-local Workspace shell preference in **Settings →
+General**. It is intentionally not a cross-platform setting: macOS and Linux
+return before reading or writing the preference file and keep their existing
+shell behavior.
+
+The preference is stored at
+`~/.openalice/state/workspace-shell.json`, outside a portable install's
+`data/` directory. Its modes and precedence are:
+
+1. **Custom** stores an absolute path to `bash.exe` and exposes it to Workspace
+   processes as `OPENALICE_WORKSPACE_SHELL_PATH`. This explicit user choice
+   wins over the packaged managed shell.
+2. **Auto** clears that override. A packaged app then uses
+   `OPENALICE_MANAGED_SHELL_PATH` (the bundled PortableGit Bash); a source/dev
+   install discovers Git Bash from `SHELL`, `PATH`, standard Git for Windows
+   installation directories, or a per-user Git installation.
+
+`OPENALICE_WORKSPACE_SHELL_PATH` is OpenAlice's resolved internal override,
+not a second independent user setting. If a custom executable is later moved
+or deleted, the setting is reported as invalid and process launch fails
+explicitly; OpenAlice does not silently fall back to Auto.
+
+During Windows Pi bootstrap, OpenAlice mirrors the resolved global shell into
+the Workspace's `.pi/settings.json`. This also backfills existing
+Workspaces created before the global preference existed, while preserving all
+other Pi-owned project settings. OpenAlice records the prior value so reset can
+restore it. The Pi file is a derived compatibility cache; the machine-local
+preference remains the source of truth.
+
+## Packaging and Runtime Flow
+
+### 1. Vendor pinned payloads
+
+`scripts/vendor-managed-runtime.mjs` prepares the runtime before packaging. It:
+
+- downloads Pi's pinned install package and lockfile;
+- verifies their checksums;
+- runs an isolated `npm ci --omit=dev` under `vendor/pi/`;
+- downloads the platform's pinned `fd` and `ripgrep` archives, verifies their
+  release checksums, and retains their license files;
+- publishes both search binaries from one shared `vendor/tools/<platform>-<arch>/bin`
+  directory so Pi never needs a per-Workspace tool download;
+- downloads and verifies PortableGit on supported Windows targets;
+- extracts it into the deterministic `vendor/git/<platform>-<arch>/` path;
+- writes `vendor/manifest.json` with versions, paths, and toolchain entries.
+
+`pnpm electron:pack` runs this through `pnpm vendor:runtime`. The desktop
+builder keeps `asar` disabled and includes `vendor/**` in the packaged files.
+Contributors who run `pnpm vendor:runtime` also get the generated search-tool
+directory on `pnpm dev`'s managed PATH; dev startup never downloads or mutates
+that payload implicitly.
+
+### 2. Resolve packaged capabilities
+
+`apps/desktop/src/main.ts` inspects the packaged resource tree before starting
+Alice and injects the capabilities it actually finds:
 
 ```text
 OPENALICE_RUNTIME_PROFILE=electron-packaged
 OPENALICE_MANAGED_PI_PATH=/.../vendor/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
 OPENALICE_MANAGED_PI_NODE_PATH=/.../OpenAlice(.exe)
-OPENALICE_MANAGED_GIT_DIR=/.../vendor/git
-OPENALICE_MANAGED_GIT_BIN=/.../vendor/git/.../git(.exe)
-OPENALICE_MANAGED_SHELL_PATH=/.../vendor/git/.../bash(.exe)
-OPENALICE_MANAGED_TOOLCHAIN_PATH=/.../vendor/git/.../bin:/.../vendor/git/.../usr/bin
+OPENALICE_MANAGED_GIT_DIR=/.../vendor/git/win32-x64
+OPENALICE_MANAGED_GIT_BIN=/.../vendor/git/win32-x64/cmd/git.exe
+OPENALICE_MANAGED_SHELL_PATH=/.../vendor/git/win32-x64/bin/bash.exe
+OPENALICE_MANAGED_TOOLCHAIN_PATH=/.../vendor/tools/win32-x64/bin:/.../cmd:/.../bin:/.../usr/bin
+LOCAL_GIT_DIRECTORY=/.../vendor/git/win32-x64
 ```
 
-In dev, these may be absent. In packaged app mode, they should be explicit
-when the corresponding managed capability exists.
-
-Alice should parse these centrally, likely in:
-
-```text
-src/core/runtime-profile.ts
-```
-
-Shape:
-
-```ts
-export interface RuntimeProfile {
-  readonly launcher: 'dev' | 'electron-dev' | 'electron-packaged' | 'docker';
-  readonly platform: NodeJS.Platform;
-  readonly arch: NodeJS.Architecture;
-  readonly appHome: string;
-  readonly userDataHome: string;
-  readonly nodeExecPath: string;
-  readonly managedPiPath: string | null;
-  readonly managedPiNodePath: string | null;
-  readonly managedGitDir: string | null;
-  readonly managedGitBin: string | null;
-  readonly managedShellPath: string | null;
-  readonly managedToolchainPath: readonly string[];
-}
-```
-
-The profile should expose capabilities, not policy. Policy belongs in the
-workspace launcher and adapters.
-
-## Resolution Rules
-
-### Agent Availability
-
-For `/agents`, `pi` availability should resolve in this order:
-
-1. `OPENALICE_MANAGED_PI_PATH` exists and is executable.
-2. PATH contains `pi` / `pi.exe`.
-3. Not installed.
-
-The response should eventually distinguish source:
-
-```ts
-type AgentRuntimeSource = 'managed' | 'path' | 'missing';
-```
-
-The first implementation can keep the old boolean `installed` contract while
-internally preferring the managed path.
-
-### Pi Spawn Command
-
-The Pi adapter should prefer the managed path without changing Workspace's
-runtime model.
-
-Current commands are shaped like:
-
-```ts
-['pi', '--session-id', id]
-['pi', '-p', '--mode', 'json', prompt]
-```
-
-Managed npm mode should become:
-
-```ts
-[managedPiNodePath, managedPiPath, '--session-id', id]
-[managedPiNodePath, managedPiPath, '-p', '--mode', 'json', prompt]
-```
-
-If a future standalone Pi binary is used instead, omit
-`OPENALICE_MANAGED_PI_NODE_PATH` and spawn `[managedPiPath, ...]`.
-
-On Windows, this avoids npm shim behavior and the `cmd.exe` wrapper path used
-for `.cmd` files. The interactive and headless paths both spawn Electron in
-Node mode directly.
-
-### Spawn PATH
-
-Workspace spawn env should prepend:
-
-1. OpenAlice CLI shim dir: `src/workspaces/cli/bin`
-2. managed Pi binary dir, if using a standalone binary
-3. managed Git/shell bin dirs, if present
-4. existing user/system PATH fallbacks
-
-This belongs in `src/workspaces/spawn-env.ts` and should be driven by
-`RuntimeProfile`. For the npm runtime, do not add Pi's `dist/` directory to
-PATH; the adapter launches `cli.js` explicitly through Electron Node.
-
-### Pi Shell Path
-
-Pi reads `settings.json` from the Pi agent dir. OpenAlice already redirects
-Pi's agent dir to per-workspace `.pi-agent` when a workspace provider override
-exists.
-
-When a managed shell exists, Pi config written by OpenAlice should include:
-
-```json
-{
-  "defaultProvider": "workspace",
-  "defaultModel": "...",
-  "shellPath": "/absolute/path/to/bash-or-system-shell"
-}
-```
-
-Rules:
-
-- Windows packaged: use managed `bash.exe`.
-- macOS packaged: use `/bin/bash` if it exists, else `/bin/sh`.
-- Dev: do not force a shell path unless explicitly provided.
-
-Important: this is not a permission boundary. It is runtime plumbing so Pi's
-`bash` tool has a shell to execute.
-
-## Git Strategy
-
-There are two separate concerns:
-
-1. Git executable/runtime payload
-2. JS API used by Alice code and bootstrap scripts
-
-### Phase 1: Replace Windows Git Payload, Keep Dugite API
-
-Keep `dugite.exec()` call sites initially:
-
-- `src/workspaces/workspace-creator.ts`
-- `src/workspaces/git-service.ts`
-- `src/workspaces/templates/_common.mjs`
-
-But on Windows packaged builds:
-
-- ship the managed Git for Windows runtime as `vendor/git/...`
-- exclude or avoid packaging dugite's own `node_modules/dugite/git/**`
-- set `LOCAL_GIT_DIRECTORY` to the managed Git dir before Alice starts
-
-Dugite supports `LOCAL_GIT_DIRECTORY`; with that env set, existing
-`dugite.exec()` calls should resolve Git from the managed runtime instead of
-dugite's embedded payload.
-
-This gets us one Windows Git runtime while preserving the established API and
-test surface.
-
-### Phase 2: OpenAlice Git Wrapper
-
-After Phase 1 is stable, introduce an OpenAlice-owned wrapper, for example:
-
-```text
-src/workspaces/git-runtime.ts
-```
-
-and a bootstrap-compatible JS helper for templates.
-
-Then migrate call sites from `dugite.exec()` to `gitExec()` and consider
-removing `dugite` entirely.
-
-Do not combine this with Phase 1 unless necessary. Workspace creation is core
-infrastructure; make the payload swap independently testable.
-
-## Packaging Layout
-
-Suggested packaged resource layout:
-
-```text
-app/
-  dist/
-  ui/dist/
-  src/workspaces/cli/bin/
-  src/workspaces/templates/
-  services/uta/dist/
-  vendor/
-    pi/
-      package.json
-      package-lock.json
-      node_modules/
-        @earendil-works/pi-coding-agent/
-          dist/cli.js
-    git/
-      win32-x64/
-        cmd/git.exe
-        bin/bash.exe
-        usr/bin/...
-      win32-arm64/
-        ...
-```
-
-The runtime preparation should be scripted, pinned by version and checksum,
-and run before `electron-builder`.
-
-Script:
-
-```text
-scripts/vendor-managed-runtime.mjs
-```
-
-Responsibilities:
-
-- download pinned Pi install package + lockfile from the Pi release
-- verify checksums
-- run an isolated `npm ci --omit=dev` under `vendor/pi`
-- emit a machine-readable manifest
-
-Later responsibilities:
-
-- download pinned Git for Windows / MinGit runtime for Windows
-- verify checksums
-- unpack into a deterministic vendor directory
-- prune docs/examples only if license obligations remain satisfied
-- extend the machine-readable manifest:
-
-```json
-{
-  "pi": {
-    "version": "0.80.3",
-    "mode": "npm",
-    "cli": "vendor/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
-  },
-  "git": {
-    "win32-x64": {
-      "path": "vendor/git/win32-x64",
-      "gitBin": "cmd/git.exe",
-      "shellPath": "bin/bash.exe"
-    }
-  }
-}
-```
-
-## Electron Main Injection
-
-`apps/desktop/src/main.ts` already computes `homeEnv`.
-
-Add managed runtime resolution nearby, before spawning Alice/UTA:
-
-```ts
-const runtimeEnv = resolveManagedRuntimeEnv({
-  appHome: homeEnv.OPENALICE_APP_HOME,
-  platform: process.platform,
-  arch: process.arch,
-});
-```
-
-Then merge into children:
-
-```ts
-env: {
-  ...process.env,
-  ELECTRON_RUN_AS_NODE: '1',
-  ...homeEnv,
-  ...runtimeEnv,
-}
-```
-
-This must happen for Alice. UTA does not need Pi, but inheriting harmless
-profile values is acceptable if it keeps the launcher simple.
-
-## Code-Level Touch Points
-
-Expected first implementation files:
-
-- `apps/desktop/src/main.ts`
-  - resolve managed runtime paths
-  - inject runtime profile env
-- `src/core/runtime-profile.ts`
-  - parse env once
-  - expose capability paths
-- `src/workspaces/agent-detect.ts`
-  - detect managed Pi before PATH Pi
-- `src/workspaces/spawn-env.ts`
-  - prepend managed Pi/toolchain paths
-- `src/workspaces/adapters/pi.ts`
-  - use managed Pi npm CLI path in commands
-  - write `shellPath` into `.pi-agent/settings.json` when available
-- `src/workspaces/service.ts`
-  - thread runtime profile into adapter context if needed
-- `package.json`
-  - include `vendor/**` in `build.files`
-  - add vendoring script to packaging flow
-- `scripts/vendor-managed-runtime.mjs`
-  - prepare pinned Pi npm runtime
-- `scripts/desktop-packaged-smoke.mjs`
-  - assert packaged profile and managed Pi availability
-
-Potential later files:
-
-- `src/workspaces/git-runtime.ts`
-- `src/workspaces/templates/_common.mjs`
-- `src/workspaces/git-service.ts`
-- `src/workspaces/workspace-creator.ts`
-
-## Tests
-
-Unit tests:
-
-- runtime profile parser:
-  - no managed env in dev
-  - packaged paths parse correctly
-  - missing files are reported predictably
-- agent detection:
-  - managed Pi wins over PATH
-  - PATH Pi works when managed Pi is absent
-  - missing Pi reports missing
-- spawn env:
-  - OpenAlice CLI shim is first
-  - standalone managed Pi dir and managed toolchain dirs are prepended
-  - npm managed Pi does not add its `dist/` directory to PATH
-  - existing PATH remains available
-- Pi adapter:
-  - command uses `[Electron Node, cli.js]` when npm managed Pi is provided
-  - command uses managed binary path when standalone managed Pi is provided
-  - `settings.json` includes `shellPath` only when profile provides it
-  - reset behavior does not leave stale provider secrets
-
-Packaged smoke tests:
-
-- `pnpm electron:smoke:packaged --temp-data`
-- verify `/agents` reports Pi installed from managed runtime
-- create chat workspace
-- spawn Pi session
-- run:
+Paths are platform-specific and only appear when their payload exists. macOS
+does not receive the Windows Git fields; packaged macOS does receive its
+resolved system shell path.
+
+### 3. Normalize the profile once
+
+`src/core/runtime-profile.ts` parses those environment values into
+`RuntimeProfile`. Workspace code consumes that profile rather than scattering
+platform guesses across adapters.
+
+The profile describes capabilities, not product permission. Managed Pi and a
+managed shell do not grant trading access; trading mode and UTA enforcement
+remain at the OpenAlice/UTA boundary.
+
+### 4. Detect and launch agents
+
+- `src/workspaces/agent-detect.ts` treats managed Pi as installed before
+  falling back to a `pi` executable on `PATH`.
+- `src/workspaces/spawn-env.ts` places OpenAlice's CLI shims first, followed by
+  managed toolchain directories and host fallbacks. On Windows it also
+  canonicalizes `Path`/`PATH` so Pi's nested shell keeps the injected entries.
+- `CliAdapter.lifecycle.prepareWorkspace` is the common, idempotent runtime
+  preparation hook. Workspace creation and every real TUI, Web, headless,
+  readiness, or probe launch use the same hook instead of inventing
+  surface-specific adapter setup.
+- `src/workspaces/adapters/pi.ts` launches the npm runtime as
+  `[managedPiNodePath, managedPiPath, ...args]`; its lifecycle implementation
+  reconciles trust, legacy config, the managed Windows shell, and the native Pi
+  automatic theme pair.
+
+The headless runner records `processStarted` only after Node emits `spawn`.
+Failures before that event retain a typed `launchErrorCode`, a human-readable
+`error`, and a bounded stderr diagnostic. Structured launcher logs record the
+Workspace, run, Agent, launch mode, failure code, and OS error code without
+including the prompt, complete argv, credentials, or environment values.
+
+The packaged Electron managed npm runtime is not added to `PATH` as a fake
+`pi` binary; the Pi adapter owns its explicit launch command. The curl
+installer additionally creates `<install-root>/bin/pi` as a direct launcher to
+the same immutable managed runtime while the `openalice` launcher still uses
+the explicit env contract. User-installed standalone Pi in plain source/dev
+continues to use the normal `pi` command path.
+
+### Workspace launch-plan disclosure
+
+**Workspace Settings → Launch** is the read-only explanation surface for the
+next fresh interactive Session. It calls the same spawn composer used by the
+PTY pool, then shows:
+
+- the adapter-composed argv and the platform-resolved process argv when they
+  differ;
+- the resolved runtime path and direct/node-shim/bash-shim/cmd-shim mode;
+- cwd, transcript discovery, and adapter capabilities; and
+- only launcher-controlled environment contributions, grouped by terminal,
+  Workspace, toolchain, and adapter ownership.
+
+The Shell utility is always present in this surface even when it is not listed
+as a Workspace agent runtime. Its plan uses the same launcher-built base
+environment and cwd as coding agents, so the injected `alice*` and `traderhub`
+CLI path and local tool transport remain visible. Shell does not receive an AI
+provider credential or another runtime's adapter-specific environment.
+
+Reading a launch plan never runs `prepareWorkspace`, writes native runtime
+configuration, or starts a process. The response omits inherited host
+environment values. Secret-like command arguments and environment values are
+redacted before crossing the API boundary; local tool transports are reported
+only as configured, and `PATH` is summarized by entry count. Keep this policy
+aligned with the structured-log rule above: launch-plan UI access does not
+authorize complete argv, prompts, credentials, or environment values in logs.
+
+Pi project trust follows the runtime boundary:
+
+- before TUI or WebPi startup, the Pi adapter records a genuinely undecided
+  OpenAlice-managed Workspace in the trust store used by that Pi process. This
+  prevents a fresh Quick Chat from stalling behind a terminal-only trust
+  selector that WebPi cannot render;
+- an explicit saved allow or deny decision on the Workspace or its nearest
+  parent remains authoritative. OpenAlice never flips that decision;
+- interactive argv does not receive the version-sensitive `--approve` flag.
+  External Pi 0.78.x therefore remains launch-compatible while Pi 0.79+ reads
+  its normal `trust.json` state;
+- packaged headless sessions pass `--approve` because no user is present and
+  OpenAlice controls the pinned managed Pi and Workspace contents;
+- plain `pnpm dev` headless sessions do not receive version-specific approval
+  flags. The Pi executable on `PATH`, its version, and its upgrade policy
+  belong to the contributor. A curl-installed CLI Runtime has an explicit
+  managed Pi path and therefore follows the pinned managed approval contract.
+
+Pi terminal appearance follows the same boundary used by Orca:
+
+- when a Workspace has no explicit Pi project theme, runtime preparation writes
+  Pi's built-in `light/dark` automatic pair to `.pi/settings.json`;
+- a Pi project theme already present in that file is user-owned and remains
+  unchanged on later launches;
+- OpenAlice supplies the terminal palette and light/dark facts through xterm,
+  OSC/DSR queries, and mode 2031. Pi remains responsible for its own TUI theme;
+  OpenAlice does not generate or inject palette-specific Pi themes.
+
+Codex and OpenCode use that terminal boundary differently:
+
+- Codex natively probes OSC 10/11 at startup and derives its contrast-sensitive
+  TUI colors from the reported foreground and background. It needs no project
+  theme injection; OpenAlice's shared visible/headless terminal responders are
+  the complete Orca-aligned integration. Codex does not currently consume mode
+  2031 palette updates after startup, so relaunch a running Codex TUI after
+  switching between light and dark appearances.
+- OpenCode can consume the same terminal palette and mode 2031 updates, but its
+  native default is the fixed `opencode` theme. When a Workspace has no native
+  TUI config or legacy explicit theme, runtime preparation writes
+  `{ "theme": "system" }` to the dedicated `tui.json` project layer.
+- Existing `tui.json`, `tui.jsonc`, and legacy project theme choices remain
+  user-owned. OpenAlice does not generate an OpenCode palette or mix TUI
+  settings into the provider-owned `opencode.json` surface.
+
+Do not add external-Pi version probing or upgrade UX to preserve flags used by
+the packaged runtime. Compatibility for the packaged app is maintained by
+pinning and upgrading the bundled Pi with the OpenAlice release.
+
+OpenAlice always updates trust in Pi's normal user agent directory (or an
+explicit user-provided `PI_CODING_AGENT_DIR`). Provider overrides do not change
+that directory: OpenAlice adds a namespaced provider to its `models.json` and
+uses the native Workspace `.pi/settings.json` layer to select it. This keeps
+Pi's global settings, packages, auth, resources, trust, and sessions visible.
+An old Workspace `.pi-agent/` tree is migrated into this native layout before
+launch and removed only after its configuration and session data are preserved.
+
+### Codex interactive permissions
+
+OpenAlice launches interactive Codex TUI sessions with explicit
+`--sandbox danger-full-access --ask-for-approval never` arguments. This applies
+to fresh sessions, Quick Chat prompts, and resumed sessions. Launch-time flags
+are intentional: otherwise Codex may inherit a restrictive global or project
+default, silently sandbox the session, and prevent the injected `alice`,
+`alice-workspace`, `alice-uta`, and `traderhub` CLIs from reaching their local
+OpenAlice transport.
+
+Headless Codex remains narrower: it uses `approval_policy=never`, a
+workspace-write sandbox, and explicit loopback network access. That is enough
+for unattended Workspace CLI work without granting an automation run unrelated
+host access. Neither policy bypasses OpenAlice's trading boundary; broker writes
+and their approval rules remain enforced by UTA.
+
+## Workspace Bootstrap and Skills
+
+Built-in templates run `bootstrap.mjs` on Electron's Node using
+`ELECTRON_RUN_AS_NODE=1`. Their Git operations go through `_common.mjs` and
+dugite; on packaged Windows, `LOCAL_GIT_DIRECTORY` points those calls at the
+managed PortableGit directory.
+
+Do not add new Bash bootstraps for built-in templates. `bootstrap.sh` remains
+a compatibility fallback for third-party templates and only works where a
+POSIX shell exists.
+
+OpenAlice copies Workspace skills into two canonical project paths:
+
+- `.claude/skills/` for Claude Code;
+- `.agents/skills/` for Codex, current Pi, and compatible shared-skill readers.
+
+Pi's provider definition lives in its normal user `models.json`; the Workspace
+stores provider/model selection, the automatic terminal theme default, and
+OpenAlice rollback metadata under `.pi/`. Do not restore a duplicate
+`.pi/skills/` copy: current Pi discovers the shared `.agents/skills/` tree from
+the Workspace working directory.
+
+Provider injection into shared native JSON config is node-owned, not
+file-owned. Claude Code's `.claude/settings.local.json` and opencode's
+`opencode.json` preserve unknown/user keys and use their adjacent OpenAlice
+rollback sidecars for conflict-aware reset. Keep all native provider config and
+rollback paths, plus OpenCode's generated `tui.json`, in `_common.mjs`'s local
+git excludes.
+
+## Packaging Invariants
+
+### Version and update surface
+
+**Settings → General → About OpenAlice** is the user-facing source for the
+running version and update state on every distribution surface. The passive
+read uses `GET /api/version`, whose GitHub release lookup is cached. An
+explicit **Check for updates** uses the authenticated
+`POST /api/version/check` route to bypass that cache without exposing a public
+rate-limit bypass.
+
+Packaged Electron also invokes the existing `electron-updater` check through
+the narrow preload bridge. That check starts the native download path when an
+eligible release exists; download progress and the ready-to-restart action are
+projected into the same Settings card. Electron development and unsigned
+directory packages may not have updater metadata, so the native check reports
+that it is unsupported and the shared version route remains the non-installing
+fallback. The top-level update banner and downloaded-update prompt remain
+secondary notifications over the same backend and updater state.
+
+Keep these true together:
+
+- `vendor/**` remains in the Electron builder file list.
+- `asar` remains disabled while packaged scripts and binaries are executed
+  from the resource tree.
+- `dugite` remains in `pnpm.onlyBuiltDependencies` because macOS packages use
+  its embedded Git. The Windows builder excludes `node_modules/dugite/git/**`,
+  keeps the JS wrapper, and must route it through managed PortableGit.
+- Pi and PortableGit versions, download URLs, and checksums remain pinned in
+  `scripts/vendor-managed-runtime.mjs`.
+- Managed `fd` and `ripgrep` versions, release URLs, checksums, binaries, and
+  license files remain pinned together in `scripts/vendor-managed-runtime.mjs`.
+- Pi remains network-capable. The managed search tools prevent its normal
+  startup probe from downloading redundant copies into its user agent
+  directory; they do not force `PI_OFFLINE` or patch Pi itself.
+- Every packaged Workspace CLI includes the shared `openalice-cli.cjs` payload,
+  its POSIX launcher, and its Windows `.cmd` twin; packaged smoke must execute
+  the payload through Electron Node.
+- A runtime version bump updates its assertions and packaged smoke coverage in
+  the same change.
+- Windows keeps a single case-insensitive `PATH` entry after Workspace env
+  construction.
+
+## Verification
+
+### Workspace acceptance contract
+
+`pnpm electron:smoke:workspace` is the release-facing definition of an
+actually usable packaged Workspace. It runs against isolated temporary data
+and a deterministic local OpenAI-compatible provider; it never reads a real
+API key or depends on external model availability.
+
+The smoke creates one real Chat Workspace and proves both layers of the product
+contract:
+
+1. A shell Session, reached through the Electron preload PTY bridge, receives
+   the production-composed Workspace environment. It resolves `alice`,
+   `alice-workspace`, `traderhub`, and `alice-uta`, loads every CLI manifest over
+   the Electron tool socket, verifies Git, and creates then reads an issue with
+   the real `alice-workspace` shim.
+2. The shell creates a one-shot scheduled Issue containing metacharacters in
+   its visible What. The real `ScheduleScanner` dispatches the packaged managed
+   Pi runtime, which performs a deterministic `bash` tool call that invokes
+   `alice-workspace issue create`. The smoke accepts the run only when it is
+   process-backed, structured assistant output is decoded, the one-shot Issue
+   auto-completes, and the created side-effect Issue is visible from the
+   external `/api/issues` surface.
+
+The focused Windows toolchain smoke additionally loads the packaged dugite JS
+wrapper with no embedded dugite Git present, then performs a real
+`init`/`add`/`commit`/`status` cycle through managed PortableGit.
+
+The second assertion deliberately uses an observable Workspace side effect,
+not a model claiming that a command succeeded. The run emits a versioned JSON
+receipt whose individual checks make PATH, injection, CLI transport, runtime
+output, tool use, and cleanup failures distinguishable. The Desktop Package
+Smoke matrix preserves these receipts as CI artifacts. Release candidates run
+the same acceptance on all three platform/architecture builds before any tag or
+GitHub Release is created; only accepted installers are then published.
+
+Do not replace the actual shims with direct tool-function calls in this smoke:
+that would stop covering argv parsing, manifest discovery, managed Node,
+Workspace identity headers, and the Electron-only socket transport.
+
+For runtime or packaging changes, run the focused local tests first:
 
 ```bash
-alice --help
-git --version
-pwd
+pnpm vitest run \
+  src/core/runtime-profile.spec.ts \
+  src/workspaces/agent-detect.spec.ts \
+  src/workspaces/spawn-env.spec.ts \
+  src/workspaces/adapters/ai-config.spec.ts \
+  scripts/vendor-managed-runtime.spec.ts \
+  scripts/assert-desktop-package.spec.ts \
+  scripts/smoke-packaged-toolchain.spec.ts
 ```
 
-`pi --version` is not required to resolve as a shell command in npm managed
-mode; the launcher starts Pi through `[Electron Node, cli.js]`.
+Then exercise the packaged path:
 
-Windows acceptance smoke:
+```bash
+pnpm electron:smoke:workspace
+```
 
-- clean Windows VM with no Node, no npm, no Git for Windows, no WSL
-- install OpenAlice
-- open app
-- configure one AI credential
-- start Pi workspace
-- ask Pi to run `alice --help`
-- ask Pi to edit a file and run `git status`
-- verify workspace creation works with PATH stripped
-- verify paths with spaces and non-ASCII characters
+That command is the standard local acceptance path. It builds and vendors the
+runtime, packages into a unique owner directory under the OS temp directory,
+launches the packaged Workspace acceptance, waits for every child to exit, and
+then removes both isolated data and the expanded app. Cleanup uses bounded
+retries for Windows `EBUSY`, `EPERM`, and `ENOTEMPTY` release races. A cleanup
+failure is reported as a smoke failure instead of silently leaking a large
+directory.
 
-## Rollout Plan
+Package artifact ownership is explicit:
 
-### Step 1: Design and Runtime Profile
+- A package-producing smoke owns its unique temporary directory and cleans it.
+- `--keep-package` preserves that temporary package and prints its path.
+- `--skip-pack` reuses an external package and never deletes it. With no
+  `--package-root`, the compatibility default is `dist/electron-app`.
+- `--package-root <path>` requires `--skip-pack`; it lets assertions and smokes
+  target a caller-owned output without transferring ownership.
+- `pnpm electron:pack` and CI/release builders intentionally keep using
+  `dist/electron-app`, because installers and update metadata are consumed by
+  later release steps.
 
-- Add `RuntimeProfile` parser.
-- Inject profile env from Electron main.
-- No packaging behavior change yet.
+When a persistent package is required for focused inspection or CI, use the
+explicit multi-step flow:
 
-### Step 2: Managed Pi on macOS
+```bash
+pnpm electron:pack
+pnpm electron:assert-package
+pnpm electron:smoke-toolchain
+pnpm electron:smoke:workspace --skip-build --skip-pack
+```
 
-- Vendor Pi npm runtime.
-- Add managed Pi detection and spawn.
-- Packaged smoke on macOS.
+An alternate persistent output can be checked with
+`pnpm electron:assert-package -- --package-root <path>` and
+`pnpm electron:smoke-toolchain -- --package-root <path>`.
 
-### Step 3: Managed Pi on Windows
+On Windows, the standard `electron-builder` step rebuilds native dependencies
+such as `node-pty` and therefore requires Visual Studio Build Tools with the
+C++ desktop workload. This is a source-build prerequisite only; users running
+the produced OpenAlice installer do not need Visual Studio.
 
-- Vendor Pi npm runtime.
-- Prefer explicit `[Electron Node, cli.js]`.
-- Confirm Pi starts in packaged app.
+The `Desktop Package Smoke` workflow runs native Apple Silicon, Intel macOS,
+and Windows package jobs. macOS release builds remain separate rather than
+universal so native dependencies are installed, built, signed, and notarized
+on their matching architecture. Apple Silicon uses the canonical
+`latest-mac.yml` update feed; Intel uses `latest-mac-intel.yml` with the
+electron-updater compatibility alias `latest-intel-mac.yml`.
 
-### Step 4: Windows Managed Git+Shell Runtime
+A release-facing change should also verify a clean-machine flow:
 
-- Vendor one Windows Git+Shell runtime.
-- Set `LOCAL_GIT_DIRECTORY`.
-- Set managed `shellPath` to `bash.exe`.
-- Exclude or avoid packaging dugite's embedded Windows Git payload.
-- Confirm there is only one Git runtime in the Windows installer.
+1. launch the packaged app with no system Node, Git, Bash, or Pi assumption;
+2. add one compatible AI credential;
+3. create a Chat Workspace using Pi;
+4. run `alice --help`, edit a file, and inspect `git status`;
+5. verify paths containing spaces and non-ASCII characters;
+6. switch Windows between Auto and Custom, restart the backend, and confirm
+   the Workspace terminal and Pi use the same persisted `bash.exe`;
+7. move a configured custom `bash.exe` and confirm the invalid setting is
+   reported instead of silently falling back to Auto.
 
-### Step 5: Optional Dugite API Removal
+## Known Follow-up
 
-- Introduce OpenAlice `gitExec()`.
-- Migrate code and template helper.
-- Remove `dugite` only after packaged Windows/macOS smoke stays green.
+OpenAlice still imports dugite directly at several Workspace and template call
+sites. A future OpenAlice-owned Git execution wrapper can centralize timeouts,
+errors, and environment policy and eventually replace the dugite dependency.
+That refactor is no longer required to keep duplicate Git binaries out of the
+Windows package.
 
-## Open Questions
-
-- Which Git for Windows / MinGit artifact should be pinned for Windows?
-- Can `LOCAL_GIT_DIRECTORY` fully cover every existing dugite call in packaged
-  Windows, or do any call sites depend on dugite-specific env setup?
-- Should managed Pi be updated only with app releases, or should OpenAlice
-  support runtime updates independently later?
-- How aggressively can we prune Pi docs/examples/assets while staying license
-  compliant and preserving useful local help?
-- Should `/agents` expose runtime source (`managed` vs `path`) immediately, or
-  keep it internal for the first slice?
-
-## Product Principle
-
-OpenAlice can still support external CLIs for power users, but the packaged app
-must have a coherent first-run path:
-
-1. user installs OpenAlice
-2. user configures AI credential
-3. user opens Workspace
-4. Alice can work
-
-No Node/npm/Git/Bash/Pi prerequisite should appear before that loop.
+That cleanup must not weaken the first-run contract: install OpenAlice,
+configure a credential, open a Workspace, and let Alice work.

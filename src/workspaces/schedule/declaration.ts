@@ -15,6 +15,7 @@
  */
 
 import { computeNextRun, type Schedule } from '../../core/schedule-expr.js'
+import type { ModelReasoningEffort } from '../../ai-providers/model-semantics.js'
 import {
   isFireable,
   isTerminalStatus,
@@ -44,7 +45,12 @@ export interface ScheduleSnapshotTask {
   when: Schedule
   /** The prompt this fire hands to the headless run (resolved `what`/title+body). */
   what: string
+  /** Unified owner. `@new` recruits once, `@workspace` recruits every fire,
+   * and an exact `@resumeId` resumes one accountable Session. */
+  assignee: string
   agent?: string
+  model?: string
+  effort?: ModelReasoningEffort
   /** False once the owning issue reaches a terminal status (done/canceled). */
   enabled: boolean
   /** When the scanner last fired this issue (epoch ms), null if never. */
@@ -98,7 +104,10 @@ export function snapshotScheduledIssue(
     issue: issue.title,
     when,
     what: issueFirePrompt(issue),
+    assignee: issue.assignee,
     ...(issue.agent ? { agent: issue.agent } : {}),
+    ...(issue.model ? { model: issue.model } : {}),
+    ...(issue.effort ? { effort: issue.effort } : {}),
     enabled: !isTerminalStatus(issue.status),
     lastFiredAtMs,
     // An overdue computed time clamps to now: a due-now task reads "due now",

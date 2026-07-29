@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Preset } from '../../api/types'
 import { api } from '../../api'
+import { i18n } from '../../i18n'
 import { CredentialModal } from './CredentialModal'
 
 vi.mock('../../api', () => ({
@@ -60,9 +61,65 @@ const onboardingTestPreset: Preset = {
     {
       id: 'local-mock',
       label: 'Local mock',
-      wires: { 'openai-chat': 'https://onboarding.openalice.test/openai-chat' },
+      wires: { 'openai-chat': 'http://127.0.0.1:0/v1' },
     },
   ],
+}
+
+const geminiPreset: Preset = {
+  id: 'gemini',
+  label: 'Google Gemini',
+  description: 'Google AI via API key',
+  category: 'third-party',
+  defaultName: 'Google Gemini',
+  hint: 'OpenAlice uses Google’s native Gemini API.',
+  setup: {
+    apiKeyLabel: 'Google AI API key',
+    apiKeyPlaceholder: 'AQ... or AIza...',
+    apiKeyHelp: 'Use a Gemini API key from Google AI Studio. AQ and AIza keys are supported.',
+    modelHelp: 'Choose a Gemini model exposed by the native endpoint.',
+  },
+  schema: {
+    type: 'object',
+    properties: {
+      apiKey: { type: 'string' },
+      model: {
+        type: 'string',
+        default: 'gemini-default',
+        oneOf: [
+          { const: 'gemini-list-first', title: 'First suggestion' },
+          { const: 'gemini-default', title: 'Catalog default' },
+        ],
+      },
+    },
+  },
+  regions: [
+    {
+      id: 'google',
+      label: 'Google',
+      wires: { 'google-generative-ai': 'https://generativelanguage.googleapis.com/v1beta' },
+    },
+  ],
+}
+
+const customPreset: Preset = {
+  id: 'custom',
+  label: 'Custom',
+  description: 'Custom compatible endpoint',
+  category: 'custom',
+  defaultName: '',
+  setup: {
+    apiKeyLabel: 'Endpoint API key',
+    apiKeyHelp: 'Use a key accepted by this endpoint.',
+    modelHelp: 'Enter the exact model ID.',
+  },
+  schema: {
+    type: 'object',
+    properties: {
+      apiKey: { type: 'string' },
+      model: { type: 'string' },
+    },
+  },
 }
 
 function setup() {
@@ -81,12 +138,58 @@ function setup() {
   return { onClose, onSaved }
 }
 
+beforeEach(async () => {
+  await i18n.changeLanguage('en')
+})
+
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
 })
 
 describe('CredentialModal', () => {
+  it('explains provider-specific key, runtime, and model behavior before testing', () => {
+    render(
+      <CredentialModal
+        mode="add"
+        presets={[geminiPreset]}
+        initialPresetId={geminiPreset.id}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Use a Gemini API key from Google AI Studio. AQ and AIza keys are supported.')).toBeTruthy()
+    expect(screen.getByText('Choose a Gemini model exposed by the native endpoint.')).toBeTruthy()
+    expect(screen.getByText('Pi')).toBeTruthy()
+    expect(screen.getByText('opencode')).toBeTruthy()
+    expect(screen.queryByText('Claude Code')).toBeNull()
+    expect(screen.queryByText('Codex')).toBeNull()
+    expect(screen.getByPlaceholderText('AQ... or AIza...')).toBeTruthy()
+    expect(screen.getByDisplayValue('gemini-default')).toBeTruthy()
+  })
+
+  it('requires a concrete URL for custom providers and explains mode compatibility', () => {
+    render(
+      <CredentialModal
+        mode="add"
+        presets={[customPreset]}
+        initialPresetId={customPreset.id}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. OpenRouter work key'), { target: { value: 'Gateway' } })
+    fireEvent.change(screen.getByPlaceholderText('Enter API key'), { target: { value: 'sk-gateway' } })
+    fireEvent.change(screen.getByPlaceholderText('Exact provider model ID'), { target: { value: 'gateway-model' } })
+
+    expect(screen.getByRole('option', { name: /OpenAI Chat Completions — opencode, Pi/ })).toBeTruthy()
+    const testButton = screen.getByRole('button', { name: 'Test connection' }) as HTMLButtonElement
+    expect(testButton.disabled).toBe(true)
+    expect(testButton.title).toBe('Enter the custom API base URL.')
+  })
+
   it('can open directly on a provided onboarding test preset', async () => {
     render(
       <CredentialModal
@@ -159,6 +262,43 @@ describe('CredentialModal', () => {
       label: 'OpenAlice Test Provider',
       apiKey: 'oa_test_ok',
       lastModel: 'openalice-onboarding-test',
+    }))
+    expect(onSaved).toHaveBeenCalled()
+  })
+
+  it('preserves a remembered model and unmatched stored endpoint while editing', async () => {
+    vi.mocked(api.config.testCredential).mockResolvedValue({ ok: true, response: 'ready' })
+    vi.mocked(api.config.updateCredential).mockResolvedValue(undefined)
+    const onSaved = vi.fn().mockResolvedValue(undefined)
+
+    render(
+      <CredentialModal
+        mode="edit"
+        cred={{
+          slug: 'openai-1',
+          vendor: 'openai',
+          authType: 'api-key',
+          wires: { 'openai-responses': 'https://gateway.example/responses' },
+          apiKey: 'sk-existing',
+          hasApiKey: true,
+          lastModel: 'gpt-account-specific',
+        }}
+        presets={[openAiPreset]}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    )
+
+    expect(screen.getByDisplayValue('gpt-account-specific')).toBeTruthy()
+    expect(screen.getByDisplayValue('Saved custom endpoint (keep unchanged)')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(api.config.updateCredential).toHaveBeenCalled())
+    expect(api.config.updateCredential).toHaveBeenCalledWith('openai-1', expect.objectContaining({
+      wires: { 'openai-responses': 'https://gateway.example/responses' },
+      lastModel: 'gpt-account-specific',
     }))
     expect(onSaved).toHaveBeenCalled()
   })

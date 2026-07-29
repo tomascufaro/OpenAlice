@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { AlertTriangle } from 'lucide-react'
-import { inputClass } from '../components/form'
+import { SettingsScrollArea, inputClass } from '../components/form'
 import { Skeleton } from '../components/StateViews'
 import { Toggle } from '../components/Toggle'
 import { useTradingConfig } from '../hooks/useTradingConfig'
@@ -13,7 +13,7 @@ import { fmt } from '../lib/format'
 import { api } from '../api'
 import type { TradingServiceStatus } from '../api/trading'
 import { useWorkspace } from '../tabs/store'
-import type { UTAConfig, BrokerPreset, BrokerHealthInfo } from '../api/types'
+import type { UTAConfig, BrokerPreset, BrokerHealthInfo, BrokerPackStatus } from '../api/types'
 
 // ==================== External order monitoring cadence ====================
 //
@@ -107,14 +107,14 @@ function ExternalOrderMonitoringRow() {
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-3 border border-border rounded-lg">
       <div className="min-w-0">
-        <div className="text-[12px] font-medium text-text">External order monitoring</div>
-        <div className="text-[11px] text-text-muted">
+        <div className="text-[12px] font-medium text-foreground">External order monitoring</div>
+        <div className="text-[11px] text-muted-foreground">
           How often to scan for orders placed outside Alice (exchange app, direct API).
           Known pending orders are tracked every 10s regardless.
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        {msg && <span className="text-[11px] text-text-muted">{msg}</span>}
+        {msg && <span className="text-[11px] text-muted-foreground">{msg}</span>}
         <select
           value={value}
           onChange={(e) => { void save(e.target.value) }}
@@ -129,9 +129,13 @@ function ExternalOrderMonitoringRow() {
   )
 }
 
-function KeylessDataSourcesRow() {
+export function KeylessDataSourcesRow({ ccxtPack, onPackInstalled }: {
+  ccxtPack?: BrokerPackStatus
+  onPackInstalled: (status: BrokerPackStatus) => void
+}) {
   const [runtimeConfig, setRuntimeConfig] = useState<TradingRuntimeConfig | null>(null)
   const [msg, setMsg] = useState('')
+  const [installing, setInstalling] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -143,6 +147,10 @@ function KeylessDataSourcesRow() {
 
   const toggle = async (source: KeylessDataSource, enabled: boolean) => {
     if (!runtimeConfig) return
+    if (enabled && !ccxtPack?.installed) {
+      setMsg('Install crypto data support first')
+      return
+    }
     const prev = runtimeConfig
     const nextSources = enabled
       ? [...new Set([...prev.keylessDataSources, source])]
@@ -161,26 +169,53 @@ function KeylessDataSourcesRow() {
     }
   }
 
+  const install = async () => {
+    setInstalling(true)
+    setMsg('Installing crypto data support…')
+    try {
+      const installed = await api.trading.installBrokerPack('ccxt')
+      onPackInstalled(installed)
+      setMsg('Installed — choose the feeds you want')
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : 'Install failed')
+    } finally {
+      setInstalling(false)
+    }
+  }
+
   if (!runtimeConfig) return null
 
   return (
     <div className="px-4 py-3 border border-border rounded-lg">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between">
         <div className="min-w-0">
-          <div className="text-[12px] font-medium text-text">Public crypto data sources</div>
-          <div className="text-[11px] text-text-muted leading-relaxed mt-0.5">
+          <div className="text-[12px] font-medium text-foreground">Public crypto data sources</div>
+          <div className="text-[11px] text-muted-foreground leading-relaxed mt-0.5">
             Optional keyless K-line feeds. Disabled by default; enabled sources appear as read-only broker-style bar IDs.
           </div>
         </div>
-        {msg && <span className="text-[11px] text-text-muted shrink-0">{msg}</span>}
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+          {msg && <span className="text-[11px] text-muted-foreground">{msg}</span>}
+          {ccxtPack && !ccxtPack.installed && (
+            <button className="btn-secondary" disabled={installing} onClick={() => { void install() }}>
+              {installing ? 'Installing…' : ccxtPack.source === 'broken' ? 'Repair data support' : 'Install data support'}
+            </button>
+          )}
+        </div>
       </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+      <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))] gap-2">
         {KEYLESS_DATA_SOURCE_OPTIONS.map((source) => {
           const checked = runtimeConfig.keylessDataSources.includes(source.id)
           return (
-            <div key={source.id} className="flex items-center justify-between gap-2 rounded-md border border-border bg-bg-secondary/40 px-3 py-2">
-              <span className="text-[12px] text-text">{source.label}</span>
-              <Toggle size="sm" checked={checked} onChange={(v) => { void toggle(source.id, v) }} />
+            <div key={source.id} className="flex items-center justify-between gap-2 rounded-md border border-border bg-secondary/40 px-3 py-2">
+              <span className="text-[12px] text-foreground">{source.label}</span>
+              <Toggle
+                size="sm"
+                checked={checked}
+                disabled={!checked && ccxtPack?.installed !== true}
+                ariaLabel={`${source.label} public data source`}
+                onChange={(v) => { void toggle(source.id, v) }}
+              />
             </div>
           )
         })}
@@ -204,6 +239,76 @@ interface EquitySummary {
   accounts: Array<{ id: string; label: string; equity: string; cash: string }>
 }
 
+export function MissingBrokerPacksNotice({ packs, onInstalled }: {
+  packs: BrokerPackStatus[]
+  onInstalled: (status: BrokerPackStatus) => void
+}) {
+  const actionable = packs.filter(
+    (pack) => (!pack.installed || pack.updateAvailable) && pack.requiredBy.length > 0,
+  )
+  const [installing, setInstalling] = useState<string | null>(null)
+  const [error, setError] = useState('')
+
+  if (actionable.length === 0) return null
+
+  const install = async (pack: BrokerPackStatus) => {
+    if (pack.engine === 'mock') return
+    setInstalling(pack.engine)
+    setError('')
+    try {
+      onInstalled(await api.trading.installBrokerPack(pack.engine))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to install ${pack.engine} support`)
+    } finally {
+      setInstalling(null)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-warning/30 bg-warning/5 px-4 py-3">
+      <div className="flex items-start gap-2.5">
+        <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[12px] font-medium text-foreground">Broker support needs attention</div>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+            Update or repair only the integrations already used by these accounts or K-line sources.
+          </p>
+          <div className="mt-3 space-y-2">
+            {actionable.map((pack) => (
+              <div key={pack.engine} className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+                <div className="min-w-0">
+                  <div className="text-[12px] font-medium uppercase text-foreground">{pack.engine}</div>
+                  <div className="truncate text-[11px] text-muted-foreground">Required by {pack.requiredBy.join(', ')}</div>
+                  {pack.updateAvailable && pack.version && (
+                    <div className="mt-0.5 text-[11px] text-warning">
+                      Installed support is from OpenAlice {pack.version}
+                    </div>
+                  )}
+                  {pack.reason && <div className="mt-0.5 text-[11px] text-warning">{pack.reason}</div>}
+                </div>
+                <button
+                  className="btn-secondary shrink-0"
+                  disabled={installing !== null}
+                  onClick={() => { void install(pack) }}
+                >
+                  {installing === pack.engine
+                    ? 'Installing…'
+                    : pack.source === 'broken'
+                      ? 'Repair'
+                      : pack.updateAvailable
+                        ? 'Update'
+                        : 'Install'}
+                </button>
+              </div>
+            ))}
+          </div>
+          {error && <p className="mt-2 text-[11px] text-destructive">{error}</p>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ==================== Page ====================
 
 export function TradingPage() {
@@ -217,9 +322,15 @@ export function TradingPage() {
   const [equity, setEquity] = useState<EquitySummary | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [serviceStatus, setServiceStatus] = useState<TradingServiceStatus | null>(null)
+  const [brokerPacks, setBrokerPacks] = useState<BrokerPackStatus[]>([])
+
+  const updateBrokerPack = (status: BrokerPackStatus) => {
+    setBrokerPacks((rows) => [...rows.filter((row) => row.engine !== status.engine), status])
+  }
 
   useEffect(() => {
     api.trading.getBrokerPresets().then(r => setPresets(r.presets)).catch(() => {})
+    api.trading.getBrokerPacks().then(r => setBrokerPacks(r.packs)).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -278,7 +389,7 @@ export function TradingPage() {
     <PageShell subtitle="Configure your UTAs (Unified Trading Accounts).">
       <div className="max-w-[820px] mx-auto space-y-2.5" aria-hidden="true">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="flex items-center gap-3 px-4 py-3.5 rounded-lg border border-border bg-bg-secondary">
+          <div key={i} className="flex items-center gap-3 px-4 py-3.5 rounded-lg border border-border bg-secondary">
             <Skeleton className="h-9 w-9 rounded-lg" />
             <div className="flex-1 space-y-2">
               <Skeleton className="h-3.5 w-32" />
@@ -293,7 +404,7 @@ export function TradingPage() {
   if (tc.error) {
     return (
       <PageShell subtitle="Failed to load trading configuration.">
-        <p className="text-[13px] text-red">{tc.error}</p>
+        <p className="text-[13px] text-destructive">{tc.error}</p>
         <button onClick={tc.refresh} className="mt-2 btn-secondary">Retry</button>
       </PageShell>
     )
@@ -307,9 +418,10 @@ export function TradingPage() {
         live={tc.utas.length > 0 ? { lastUpdated } : undefined}
       />
 
-      <div className="flex-1 overflow-y-auto px-4 md:px-6 py-5">
+      <SettingsScrollArea className="px-4 py-5 md:px-6">
         <div className="max-w-[820px] mx-auto space-y-4">
           {serviceStatus?.available === false && <TradingServiceOfflineBanner status={serviceStatus} />}
+          <MissingBrokerPacksNotice packs={brokerPacks} onInstalled={updateBrokerPack} />
           {tc.utas.length === 0 ? (
             <EmptyState onAdd={() => setShowAdd(true)} />
           ) : (
@@ -329,17 +441,20 @@ export function TradingPage() {
               })}
               <button
                 onClick={() => setShowAdd(true)}
-                className="w-full py-2.5 text-[12px] text-text-muted hover:text-text border border-dashed border-border hover:border-text-muted/40 rounded-lg transition-colors"
+                className="w-full py-2.5 text-[12px] text-muted-foreground hover:text-foreground border border-dashed border-border hover:border-muted-foreground/40 rounded-lg transition-colors"
               >
                 + Add UTA
               </button>
             </div>
           )}
 
-          <KeylessDataSourcesRow />
+          <KeylessDataSourcesRow
+            ccxtPack={brokerPacks.find((row) => row.engine === 'ccxt')}
+            onPackInstalled={updateBrokerPack}
+          />
           {tc.utas.length > 0 && <ExternalOrderMonitoringRow />}
         </div>
-      </div>
+      </SettingsScrollArea>
 
       {showAdd && (
         <CreateUTADialog
@@ -363,6 +478,7 @@ export function TradingPage() {
             setEditingId(id)
           }}
           onClose={() => setShowAdd(false)}
+          onPackInstalled={updateBrokerPack}
         />
       )}
 
@@ -390,20 +506,20 @@ function PageShell({ subtitle, children }: { subtitle: string; children?: React.
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <PageHeader title="Trading" description={subtitle} />
-      <div className="flex-1 overflow-y-auto px-4 md:px-6 py-5">{children}</div>
+      <SettingsScrollArea className="px-4 py-5 md:px-6">{children}</SettingsScrollArea>
     </div>
   )
 }
 
 function TradingServiceOfflineBanner({ status }: { status: TradingServiceStatus }) {
   return (
-    <div className="flex gap-3 rounded-lg border border-yellow-400/30 bg-yellow-400/5 px-4 py-3" role="status">
-      <AlertTriangle size={16} className="mt-0.5 shrink-0 text-yellow-400" aria-hidden />
+    <div className="flex gap-3 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3" role="status">
+      <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
       <div className="min-w-0">
-        <div className="text-[12px] font-medium text-text">Trading service offline</div>
-        <div className="mt-0.5 text-[11px] text-text-muted leading-relaxed">
+        <div className="text-[12px] font-medium text-foreground">Trading service offline</div>
+        <div className="mt-0.5 text-[11px] text-muted-foreground leading-relaxed">
           {status.hint ?? 'Alice is running in lite mode.'}
-          {status.reason ? <span className="ml-1 font-mono text-text-muted/70">{status.reason}</span> : null}
+          {status.reason ? <span className="ml-1 font-mono text-muted-foreground/70">{status.reason}</span> : null}
         </div>
       </div>
     </div>
@@ -414,9 +530,9 @@ function TradingServiceOfflineBanner({ status }: { status: TradingServiceStatus 
 
 function EmptyState({ onAdd }: { onAdd: () => void }) {
   return (
-    <div className="rounded-xl border border-dashed border-border p-12 text-center">
-      <h3 className="text-[16px] font-semibold text-text mb-2">No UTAs configured</h3>
-      <p className="text-[13px] text-text-muted mb-6 max-w-[320px] mx-auto leading-relaxed">
+    <div className="rounded-xl border border-dashed border-border p-6 text-center sm:p-12">
+      <h3 className="text-[16px] font-semibold text-foreground mb-2">No UTAs configured</h3>
+      <p className="text-[13px] text-muted-foreground mb-6 max-w-[320px] mx-auto leading-relaxed">
         Connect a crypto exchange or brokerage to start automated trading.
       </p>
       <button onClick={onAdd} className="btn-primary">
@@ -463,7 +579,7 @@ function UTACard({ uta, preset, health, equity, onClick }: {
   const isDisabled = health?.disabled || uta.enabled === false
   const badge = preset
     ? { text: preset.badge, color: `${preset.badgeColor} ${preset.badgeColor.replace('text-', 'bg-')}/10` }
-    : { text: uta.presetId.slice(0, 2).toUpperCase(), color: 'text-text-muted bg-text-muted/10' }
+    : { text: uta.presetId.slice(0, 2).toUpperCase(), color: 'text-muted-foreground bg-muted-foreground/10' }
 
   // Per-card equity is a liveness signal, not a portfolio view —
   // proves the connection returned a real account balance, not just
@@ -477,27 +593,27 @@ function UTACard({ uta, preset, health, equity, onClick }: {
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left rounded-lg border border-border bg-bg-secondary/30 px-4 py-3 transition-all hover:border-text-muted/40 hover:bg-bg-tertiary/20 ${isDisabled ? 'opacity-50' : ''}`}
+      className={`w-full text-left rounded-lg border border-border bg-secondary/30 px-4 py-3 transition-all hover:border-muted-foreground/40 hover:bg-muted/20 ${isDisabled ? 'opacity-50' : ''}`}
     >
       <div className="flex items-center gap-3">
         <span className={`text-[10px] font-bold px-2 py-1 rounded-md shrink-0 ${badge.color}`}>
           {badge.text}
         </span>
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium text-text truncate">{uta.label || uta.id}</div>
-          <div className="text-[11px] text-text-muted truncate mt-0.5 font-mono">
+          <div className="text-[13px] font-medium text-foreground truncate">{uta.label || uta.id}</div>
+          <div className="text-[11px] text-muted-foreground truncate mt-0.5 font-mono">
             {uta.id}
-            <span className="mx-1.5 text-text-muted/40">·</span>
+            <span className="mx-1.5 text-muted-foreground/40">·</span>
             {buildSubtitle(uta, preset)}
-            {uta.guards.length > 0 && <span className="ml-1.5 text-text-muted/50">{uta.guards.length} guard{uta.guards.length > 1 ? 's' : ''}</span>}
+            {uta.guards.length > 0 && <span className="ml-1.5 text-muted-foreground/50">{uta.guards.length} guard{uta.guards.length > 1 ? 's' : ''}</span>}
           </div>
         </div>
         <div className="shrink-0 flex items-center gap-3">
           {equityNode && (
-            <span className="text-[11px] text-text-muted/80 hidden sm:inline">{equityNode}</span>
+            <span className="text-[11px] text-muted-foreground/80 hidden sm:inline">{equityNode}</span>
           )}
           {uta.enabled === false
-            ? <span className="text-[11px] text-text-muted">Disabled</span>
+            ? <span className="text-[11px] text-muted-foreground">Disabled</span>
             : <HealthBadge health={health} />
           }
         </div>

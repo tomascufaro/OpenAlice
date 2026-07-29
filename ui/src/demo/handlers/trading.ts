@@ -43,6 +43,58 @@ function utaId(params: { id?: string | readonly string[] }): string {
   return Array.isArray(v) ? v[0] ?? '' : String(v ?? '')
 }
 
+type DemoOrderAction = 'placeOrder' | 'closePosition' | 'cancelOrder'
+
+async function simulateOrderPush(request: Request, action: DemoOrderAction) {
+  const body = await request.json() as { message?: unknown; orderId?: unknown }
+  const message = typeof body.message === 'string' && body.message.trim()
+    ? body.message.trim()
+    : `Demo ${action}`
+  const orderId = action === 'cancelOrder' && typeof body.orderId === 'string'
+    ? body.orderId
+    : `demo-${action}-order`
+
+  return HttpResponse.json({
+    hash: `demo-${action}-commit`,
+    message,
+    operationCount: 1,
+    submitted: [{ action, success: true, orderId, status: 'Simulated' }],
+    rejected: [],
+    simulated: true,
+  })
+}
+
+const demoBrokerPresets = [
+  {
+    id: 'alpaca', label: 'Alpaca', description: 'US equities with paper-trading support.',
+    category: 'recommended', defaultName: 'Alpaca', badge: 'AP', badgeColor: 'text-success',
+    engine: 'alpaca', guardCategory: 'securities', subtitleFields: [],
+    schema: {
+      type: 'object',
+      properties: {
+        keyId: { type: 'string', title: 'API key', writeOnly: true },
+        secretKey: { type: 'string', title: 'API secret', writeOnly: true },
+        paper: { type: 'boolean', title: 'Paper account', default: true },
+      },
+      required: ['keyId', 'secretKey'],
+    },
+  },
+  {
+    id: 'okx', label: 'OKX', description: 'OKX Unified Trading Account.',
+    category: 'crypto', defaultName: 'OKX', badge: 'OK', badgeColor: 'text-info',
+    engine: 'ccxt', guardCategory: 'crypto', subtitleFields: [],
+    schema: {
+      type: 'object',
+      properties: {
+        apiKey: { type: 'string', title: 'API key', writeOnly: true },
+        secret: { type: 'string', title: 'Secret', writeOnly: true },
+        password: { type: 'string', title: 'Passphrase', writeOnly: true },
+      },
+      required: ['apiKey', 'secret', 'password'],
+    },
+  },
+]
+
 export const tradingHandlers = [
   http.get('/api/trading/status', () =>
     HttpResponse.json({
@@ -99,13 +151,16 @@ export const tradingHandlers = [
   http.get('/api/trading/uta/:id/trade-history', ({ params }) =>
     HttpResponse.json({ trades: demoTradeHistoryByUTA[utaId(params)] ?? [] }),
   ),
-  http.get('/api/trading/uta/:id/market-clock', () =>
-    HttpResponse.json({
+  http.get('/api/trading/uta/:id/market-clock', ({ params }) => {
+    if (utaId(params) === DEMO_UTA_CRYPTO) {
+      return HttpResponse.json({ isOpen: true })
+    }
+    return HttpResponse.json({
       isOpen: false,
       nextOpen: new Date(Date.now() + 3600_000).toISOString(),
       nextClose: new Date(Date.now() + 7 * 3600_000).toISOString(),
-    }),
-  ),
+    })
+  }),
 
   http.get('/api/trading/uta/:id/wallet/status', () =>
     HttpResponse.json({ staged: [], pendingMessage: null, head: null, commitCount: 0 }),
@@ -126,26 +181,30 @@ export const tradingHandlers = [
       rejected: [],
     }),
   ),
-  http.post('/api/trading/uta/:id/wallet/place-order', () =>
-    HttpResponse.json(
-      { error: 'Demo mode — orders are read-only.', phase: 'validate' },
-      { status: 400 },
-    ),
+  http.post('/api/trading/uta/:id/wallet/place-order', ({ request }) =>
+    simulateOrderPush(request, 'placeOrder'),
   ),
-  http.post('/api/trading/uta/:id/wallet/close-position', () =>
-    HttpResponse.json(
-      { error: 'Demo mode — orders are read-only.', phase: 'validate' },
-      { status: 400 },
-    ),
+  http.post('/api/trading/uta/:id/wallet/close-position', ({ request }) =>
+    simulateOrderPush(request, 'closePosition'),
   ),
-  http.post('/api/trading/uta/:id/wallet/cancel-order', () =>
-    HttpResponse.json(
-      { error: 'Demo mode — orders are read-only.', phase: 'validate' },
-      { status: 400 },
-    ),
+  http.post('/api/trading/uta/:id/wallet/cancel-order', ({ request }) =>
+    simulateOrderPush(request, 'cancelOrder'),
   ),
 
-  http.get('/api/trading/config/broker-presets', () => HttpResponse.json({ presets: [] })),
+  http.get('/api/trading/config/broker-presets', () => HttpResponse.json({ presets: demoBrokerPresets })),
+  http.get('/api/trading/config/broker-packs', () => HttpResponse.json({
+    packs: [
+      { engine: 'mock', installed: true, source: 'builtin', version: 'demo', updateAvailable: false, requiredBy: [] },
+      { engine: 'ccxt', installed: true, source: 'workspace', version: 'demo', updateAvailable: false, requiredBy: [] },
+      { engine: 'alpaca', installed: false, source: 'missing', requiredBy: [] },
+      { engine: 'ibkr', installed: false, source: 'missing', requiredBy: [] },
+      { engine: 'leverup', installed: false, source: 'missing', requiredBy: [] },
+      { engine: 'longbridge', installed: false, source: 'missing', requiredBy: [] },
+    ],
+  })),
+  http.post('/api/trading/config/broker-packs/:engine/install', ({ params }) => HttpResponse.json({
+    engine: String(params.engine), installed: true, source: 'downloaded', version: 'demo', updateAvailable: false, requiredBy: [],
+  })),
   http.get('/api/trading/config', () => HttpResponse.json({ utas: demoUTAConfigs })),
   http.post('/api/trading/config/uta', () => HttpResponse.json(demoUTAConfig, { status: 201 })),
   http.put('/api/trading/config/uta/:id', () => HttpResponse.json(demoUTAConfig)),

@@ -33,6 +33,7 @@ const LEGACY_UUID_WS = '4894ef8b-66e1-4a41-a222-ba564e51a8c0'
 function rec(over: Partial<SessionRecord> = {}): SessionRecord {
   return {
     id: 'claude-calm-amber-river',
+    resumeId: 'resume-calm-amber-river-a1b2c3',
     wsId: WS,
     agent: 'claude',
     name: 'c1',
@@ -107,5 +108,25 @@ describe('SessionRegistry persistence', () => {
     expect(reloaded.get(LEGACY_UUID_WS, 'claude-clear-copper-harbor')?.title).toBe(
       'Legacy workspace still opens',
     )
+  })
+
+  it('round-trips and indexes the headless run that produced a session', async () => {
+    const reg = await SessionRegistry.load(root, noopLogger)
+    await reg.create(rec({
+      id: 'codex-steady-copper-harbor',
+      agent: 'codex',
+      name: 'x1',
+      sourceRunId: 'run-2026-07-11',
+      resumeHint: { kind: 'agent-session-id', value: '019eb75e-0b1b-7fa2' },
+    }))
+
+    const reloaded = await SessionRegistry.load(root, noopLogger)
+    await reloaded.ensureLoaded(WS)
+
+    expect(reloaded.findBySourceRunId(WS, 'run-2026-07-11')).toMatchObject({
+      id: 'codex-steady-copper-harbor',
+      sourceRunId: 'run-2026-07-11',
+      resumeHint: { kind: 'agent-session-id', value: '019eb75e-0b1b-7fa2' },
+    })
   })
 })

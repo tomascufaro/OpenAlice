@@ -10,8 +10,10 @@ declare const __OPENALICE_DEV_BACKEND_PORT__: number
 
 interface ImportMetaEnv {
   readonly VITE_DEMO_MODE?: string
+  readonly VITE_OPENALICE_FIRST_RUN_GUIDE?: string
   readonly VITE_OPENALICE_ONBOARDING_TEST?: string
   readonly VITE_OPENALICE_CREDENTIAL_TEST_MODE?: string
+  readonly VITE_OPENALICE_ONBOARDING_AI_BASE_URL?: string
   readonly VITE_OPENALICE_ONBOARDING_STORAGE_SUFFIX?: string
 }
 
@@ -35,6 +37,16 @@ interface Window {
         appHome: string
       }>
     }
+    readonly keyboard: {
+      getInputSourceId(): Promise<string | null>
+    }
+    readonly dataHome: {
+      getStatus(): Promise<OpenAliceDataHomeStatus>
+      chooseAndRestart(): Promise<OpenAliceDataHomeActionResult>
+      useRecentAndRestart(path: string): Promise<OpenAliceDataHomeActionResult>
+      setAskOnStartup(enabled: boolean): Promise<OpenAliceDataHomeStatus>
+      openCurrent(): Promise<string>
+    }
     readonly updater?: {
       getStatus(): Promise<
         | { phase: 'available'; version?: string; releaseUrl?: string }
@@ -42,6 +54,10 @@ interface Window {
         | { phase: 'downloaded'; version: string; releaseUrl: string }
         | { phase: 'error'; message: string }
         | null
+      >
+      checkForUpdates(): Promise<
+        | { supported: true }
+        | { supported: false; reason: 'not-packaged' | 'missing-config' }
       >
       onStatus(cb: (status:
         | { phase: 'available'; version?: string; releaseUrl?: string }
@@ -83,6 +99,7 @@ interface Window {
       }): string
       send(connectionId: string, data: Uint8Array): void
       resize(connectionId: string, cols: number, rows: number): void
+      control(connectionId: string, data: string): void
       close(connectionId: string): void
       onMessage(
         connectionId: string,
@@ -94,4 +111,19 @@ interface Window {
       ): () => void
     }
   }
+}
+
+interface OpenAliceDataHomeStatus {
+  readonly currentHome: string
+  readonly defaultHome: string
+  readonly source: 'default' | 'desktop-preference' | 'environment'
+  readonly recentHomes: readonly string[]
+  readonly askOnStartup: boolean
+  readonly selectionLocked: boolean
+  readonly selectionLock: 'openalice-home-env' | 'workspace-root-env' | null
+}
+
+interface OpenAliceDataHomeActionResult {
+  readonly outcome: 'cancelled' | 'restarting' | 'unchanged' | 'locked'
+  readonly status: OpenAliceDataHomeStatus
 }

@@ -1,5 +1,5 @@
 ---
-version: 1.2.0
+version: 1.6.4
 ---
 
 # Chat
@@ -19,6 +19,11 @@ and turn follow-up into `.alice/issues/<id>.md` work items. The bundled
 (social sentiment, options flow, global news frontpages) through the optional
 community `opencli` CLI — it will ask before assuming you have it.
 
+When an Inbox result or Issue is hard to interpret, the workspace can ask its
+attributable product Session directly. It can also dispatch several peer
+questions concurrently, await them server-side, and synthesize the replies
+without hand-written sleep loops or leaking runtime-native session ids.
+
 Trading runs through the `alice-uta` CLI against your UTA accounts — orders go
 through the trading-as-git approval flow. Recurring/headless work runs through
 scheduled issues: add a `when` field to an issue and the launcher fires it as a
@@ -33,7 +38,11 @@ headless workspace run.
 
 ## What you'll see in Inbox
 
-(v1: Inbox is one-way — the agent posts; you don't reply through it.)
+Inbox keeps durable report delivery separate from the live terminal. A user or
+peer agent can ask the attributable sender about a report; when only the
+Workspace is known, OpenAlice creates a fresh Session and labels its provenance
+honestly instead of pretending it found the original author. Reconstruction
+instructions are added only when the caller explicitly requests them.
 
 Things Alice will route here:
 - Research notes, thesis updates, and market snapshots worth re-reading later.

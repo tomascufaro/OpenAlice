@@ -1,5 +1,10 @@
-import type { HeadlessTaskRecord } from '../../api/headless'
-import type { IssueDetail, IssuePriority, IssueSnapshot, IssueStatus } from '../../api/issues'
+import type {
+  IssueComment,
+  IssueDetail,
+  IssuePatch,
+  IssueRunRecord,
+  IssueSnapshot,
+} from '../../api/issues'
 import { demoInboxEntries } from './inbox'
 
 // GET /api/issues aggregates every workspace's declared issues by SCANNING
@@ -11,8 +16,8 @@ import { demoInboxEntries } from './inbox'
 //
 // Coverage exercised by these fixtures: 2 workspaces; all five `status` values
 // (backlog/todo/in_progress/done/canceled); all five `priority` values
-// (urgent/high/medium/low/none); all three assignee shapes (human / ws:<tag> /
-// unassigned); all three `when` kinds (cron/every/at) plus unscheduled work
+// (urgent/high/medium/low/none); all four assignee shapes (workspace / session /
+// human / unassigned); all three `when` kinds (cron/every/at) plus unscheduled work
 // items (no `when`, no lastFired/nextDue).
 //
 // Also exercised: a CROSS-WORKSPACE NAME COLLISION. Both workspaces declare an
@@ -40,11 +45,12 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Morning movers scan',
           status: 'in_progress',
           priority: 'high',
-          assignee: 'ws:auto-quant',
+          assignee: '@workspace',
           agent: 'codex',
-          when: { kind: 'cron', cron: '30 8 * * 1-5' },
+          when: { kind: 'cron', cron: '30 8 * * 1-5', timezone: 'America/New_York' },
           lastFiredAtMs: now - HOUR,
           nextDueAtMs: now + 16 * HOUR,
+          automationHealth: { state: 'running', message: 'A scheduled run is in progress.', latestTaskId: 'demo-run-morning-1' },
         },
         // Scheduled (every) + urgent.
         {
@@ -52,11 +58,15 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Thesis invalidation watch',
           status: 'todo',
           priority: 'urgent',
-          assignee: 'ws:auto-quant',
-          agent: 'claude',
+          assignee: '@resume-demo-thesis-owner',
           when: { kind: 'every', every: '1h' },
           lastFiredAtMs: now - HOUR / 2,
           nextDueAtMs: now + HOUR / 2,
+          automationHealth: {
+            state: 'interrupted',
+            message: 'The 30m watchdog ran 14m late. The computer likely slept or OpenAlice was paused; this run was not automatically retried.',
+            latestTaskId: 'demo-run-thesis-1',
+          },
         },
         // Pure work item — no `when`, scanner ignores it, board still shows it.
         {
@@ -64,7 +74,7 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Rebalance sizing logic needs a human review',
           status: 'todo',
           priority: 'medium',
-          assignee: 'human',
+          assignee: '@human',
         },
         // Backlog, unassigned, unscheduled.
         {
@@ -72,7 +82,7 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Prune stale signal cache entries',
           status: 'backlog',
           priority: 'low',
-          assignee: 'unassigned',
+          assignee: '@unassigned',
         },
         // Cross-workspace name collision (also declared in demo-ws-macro under
         // the same title). nameCollision flags the board warning; the two share a
@@ -82,7 +92,7 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Liquidity risk review',
           status: 'todo',
           priority: 'high',
-          assignee: 'ws:auto-quant',
+          assignee: '@workspace',
           nameCollision: true,
         },
       ],
@@ -98,11 +108,12 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Weekly macro digest',
           status: 'in_progress',
           priority: 'medium',
-          assignee: 'ws:macro-research',
+          assignee: '@workspace',
           agent: 'codex',
-          when: { kind: 'cron', cron: '0 16 * * 5' },
+          when: { kind: 'cron', cron: '0 16 * * 5', timezone: 'local' },
           lastFiredAtMs: now - 2 * DAY,
           nextDueAtMs: now + 5 * DAY,
+          automationHealth: { state: 'healthy', message: 'Latest scheduled run completed.', latestTaskId: 'demo-run-weekly-1' },
         },
         // Scheduled (at) one-shot — never fired yet.
         {
@@ -110,11 +121,11 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Write the CPI release reaction note',
           status: 'todo',
           priority: 'high',
-          assignee: 'human',
-          agent: 'claude',
+          assignee: '@resume-demo-cpi-owner',
           when: { kind: 'at', at: new Date(now + 3 * DAY).toISOString() },
           lastFiredAtMs: null,
           nextDueAtMs: now + 3 * DAY,
+          automationHealth: { state: 'blocked', message: 'Assigned Session does not exist. Choose an active Session or @workspace.' },
         },
         // Completed work item.
         {
@@ -122,7 +133,7 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Summarize the upcoming Fed speaker calendar',
           status: 'done',
           priority: 'none',
-          assignee: 'human',
+          assignee: '@human',
         },
         // Canceled work item.
         {
@@ -130,7 +141,7 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Cross-asset correlation study',
           status: 'canceled',
           priority: 'low',
-          assignee: 'unassigned',
+          assignee: '@unassigned',
         },
         // Cross-workspace name collision (the other half of the auto-quant
         // "Liquidity risk review"). Same title, different wsId / status / owner.
@@ -139,7 +150,7 @@ export const demoIssuesSnapshot: IssueSnapshot = {
           title: 'Liquidity risk review',
           status: 'backlog',
           priority: 'medium',
-          assignee: 'human',
+          assignee: '@human',
           nameCollision: true,
         },
       ],
@@ -172,7 +183,7 @@ interface IssueDetailExtras {
   /** Scheduling frontmatter `agent` (adapter id), if set. */
   agent?: string
   /** This issue's headless runs, newest-first (Activity feed). */
-  runs: HeadlessTaskRecord[]
+  runs: IssueRunRecord[]
 }
 
 // Keyed by `${wsId}/${id}`. Issues absent here fall back to a generic body + no
@@ -209,6 +220,8 @@ const demoIssueExtras: Record<string, IssueDetailExtras> = {
     runs: [
       {
         taskId: 'demo-run-morning-1',
+        resumeId: 'demo-resume-morning-1',
+        resumable: true,
         wsId: 'demo-ws-auto-quant',
         agent: 'codex',
         prompt: 'Run the morning movers scan and push a ranked Inbox digest.',
@@ -217,10 +230,18 @@ const demoIssueExtras: Record<string, IssueDetailExtras> = {
         finishedAt: now - HOUR + 84_000,
         durationMs: 84_000,
         exitCode: 0,
-        agentSessionId: '019eb75e-0b1b-7fa2-ba95-fd7db4463afe',
+        output: {
+          hasAssistantReply: true,
+          assistantPreview: 'Morning scan complete: three actionable gaps, led by the semiconductor cluster.',
+          blockCount: 7,
+          toolCalls: 3,
+          toolFailures: 0,
+        },
       },
       {
         taskId: 'demo-run-morning-2',
+        resumeId: 'demo-resume-morning-2',
+        resumable: false,
         wsId: 'demo-ws-auto-quant',
         agent: 'codex',
         prompt: 'Run the morning movers scan and push a ranked Inbox digest.',
@@ -230,9 +251,17 @@ const demoIssueExtras: Record<string, IssueDetailExtras> = {
         durationMs: 12_000,
         exitCode: 1,
         error: 'market-data provider timed out (OpenBB upstream 504)',
+        output: {
+          hasAssistantReply: false,
+          blockCount: 2,
+          toolCalls: 1,
+          toolFailures: 1,
+        },
       },
       {
         taskId: 'demo-run-morning-3',
+        resumeId: 'demo-resume-morning-3',
+        resumable: true,
         wsId: 'demo-ws-auto-quant',
         agent: 'codex',
         prompt: 'Run the morning movers scan and push a ranked Inbox digest.',
@@ -241,7 +270,6 @@ const demoIssueExtras: Record<string, IssueDetailExtras> = {
         finishedAt: now - 2 * DAY + 79_000,
         durationMs: 79_000,
         exitCode: 0,
-        agentSessionId: '019eb6aa-2c4f-7b10-9d22-aa1c0f7711be',
       },
     ],
   },
@@ -256,15 +284,28 @@ const demoIssueExtras: Record<string, IssueDetailExtras> = {
     runs: [
       {
         taskId: 'demo-run-thesis-1',
+        resumeId: 'demo-resume-thesis-1',
+        resumable: false,
         wsId: 'demo-ws-auto-quant',
         agent: 'claude',
         prompt: 'Re-check every active thesis against the latest quotes; flag invalidations.',
-        status: 'running',
-        startedAt: now - 2 * 60_000,
-        agentSessionId: '414d6b8c-95b4-4e01-8ffc-4b6332da17d4',
+        startedAt: now - 44 * 60_000,
+        finishedAt: now,
+        durationMs: 44 * 60_000,
+        killed: true,
+        signal: 'SIGKILL',
+        status: 'failed',
+        failure: {
+          kind: 'system_paused',
+          title: 'Computer or launcher was paused',
+          message: 'The 30m watchdog ran 14m late. The computer likely slept or OpenAlice was paused; this run was not automatically retried.',
+          retryable: true,
+        },
       },
       {
         taskId: 'demo-run-thesis-2',
+        resumeId: 'demo-resume-thesis-2',
+        resumable: false,
         wsId: 'demo-ws-auto-quant',
         agent: 'claude',
         prompt: 'Re-check every active thesis against the latest quotes; flag invalidations.',
@@ -276,6 +317,8 @@ const demoIssueExtras: Record<string, IssueDetailExtras> = {
       },
       {
         taskId: 'demo-run-thesis-3',
+        resumeId: 'demo-resume-thesis-3',
+        resumable: false,
         wsId: 'demo-ws-auto-quant',
         agent: 'claude',
         prompt: 'Re-check every active thesis against the latest quotes; flag invalidations.',
@@ -304,6 +347,8 @@ const demoIssueExtras: Record<string, IssueDetailExtras> = {
     runs: [
       {
         taskId: 'demo-run-digest-1',
+        resumeId: 'demo-resume-digest-1',
+        resumable: true,
         wsId: 'demo-ws-macro',
         agent: 'codex',
         prompt: 'Write the weekly macro digest and push it to the Inbox.',
@@ -312,10 +357,11 @@ const demoIssueExtras: Record<string, IssueDetailExtras> = {
         finishedAt: now - 2 * DAY + 156_000,
         durationMs: 156_000,
         exitCode: 0,
-        agentSessionId: '019eb5c1-7d80-7a44-8f3e-3b6e2c9d4401',
       },
       {
         taskId: 'demo-run-digest-2',
+        resumeId: 'demo-resume-digest-2',
+        resumable: false,
         wsId: 'demo-ws-macro',
         agent: 'codex',
         prompt: 'Write the weekly macro digest and push it to the Inbox.',
@@ -407,15 +453,24 @@ export function demoIssueDetail(wsId: string, id: string): IssueDetail | null {
   const boardIssue = findBoardIssue(wsId, id)
   if (!boardIssue) return null
   const extras = demoIssueExtras[`${wsId}/${id}`]
-  const body = extras?.body ?? `${boardIssue.title}\n\n(No description.)`
+  const legacyBody = extras?.body?.trim() ?? ''
+  const explicitWhat = extras?.what?.trim() ?? ''
+  const what = explicitWhat && legacyBody && explicitWhat !== legacyBody
+    ? `${explicitWhat}\n\n## Context\n\n${legacyBody}`
+    : explicitWhat || legacyBody || boardIssue.title
+  const runs = extras?.runs ?? []
+  const comments = demoIssueComments[`${wsId}/${id}`] ?? []
   return {
     issue: {
       ...boardIssue,
-      body,
-      ...(extras?.what ? { what: extras.what } : {}),
+      what,
       ...(extras?.agent ? { agent: extras.agent } : {}),
     },
-    runs: extras?.runs ?? [],
+    comments,
+    runs,
+    activity: comments
+      .map((comment) => ({ kind: 'comment' as const, id: comment.id, at: Date.parse(comment.at), comment }))
+      .sort((a, b) => a.at - b.at),
     // issue→inbox direction of the cross-link: every inbox report this issue
     // produced (server-stamped origin.issueId === id, this workspace), newest
     // first. Mirrors the real route's `inboxReportsFor` (webui/routes/issues.ts).
@@ -432,20 +487,9 @@ export function demoIssueDetail(wsId: string, id: string): IssueDetail | null {
 // UI reflects edits/comments just like the real working-tree-only writes do. The
 // board snapshot is the single source of truth for status/priority/assignee
 // (GET list + GET detail both read it live, so one mutation updates both); the
-// markdown body — which now carries the appended `## Comments` section — lives in
-// the extras map, materialized on demand for rows that had no extras entry.
-
-/** Append one comment block to a markdown body, under a stable `## Comments`
- *  heading (created if absent). Mirrors the server's appendIssueComment format:
- *  `**<author>** · <ISO timestamp>` then a blank line then the text. */
-function appendCommentToBody(body: string, author: string, text: string): string {
-  const block = `**${author}** · ${new Date().toISOString()}\n\n${text}`
-  const trimmed = body.replace(/\s+$/, '')
-  const hasSection = /(^|\n)## Comments\s*(\n|$)/.test(trimmed)
-  return hasSection
-    ? `${trimmed}\n\n${block}\n`
-    : `${trimmed}\n\n## Comments\n\n${block}\n`
-}
+// What stays in the markdown fixture; comments mirror the server's independent
+// per-Issue JSON sidecar so editing one cannot corrupt the other.
+const demoIssueComments: Record<string, IssueComment[]> = {}
 
 /** PATCH backing: mutate the board issue's status/priority/assignee in place,
  *  then return the fresh detail shape (same `{ issue, runs }` as GET). Returns
@@ -453,13 +497,30 @@ function appendCommentToBody(body: string, author: string, text: string): string
 export function demoIssueUpdate(
   wsId: string,
   id: string,
-  patch: { status?: IssueStatus; priority?: IssuePriority; assignee?: string; agent?: string | null },
+  patch: IssuePatch,
 ): IssueDetail | null {
   const boardIssue = findBoardIssue(wsId, id)
   if (!boardIssue) return null
   if (patch.status !== undefined) boardIssue.status = patch.status
   if (patch.priority !== undefined) boardIssue.priority = patch.priority
-  if (patch.assignee !== undefined) boardIssue.assignee = patch.assignee
+  if (patch.assignee !== undefined) {
+    boardIssue.assignee = patch.assignee
+    if (patch.assignee.startsWith('@resume-')) {
+      delete boardIssue.agent
+      delete boardIssue.model
+      delete boardIssue.effort
+    }
+  }
+  if (patch.what !== undefined) {
+    const key = `${wsId}/${id}`
+    const existing = demoIssueExtras[key]
+    if (existing) {
+      existing.what = patch.what
+      existing.body = ''
+    } else {
+      demoIssueExtras[key] = { body: '', what: patch.what, runs: [] }
+    }
+  }
   if (patch.agent !== undefined) {
     if (patch.agent === null) delete boardIssue.agent
     else boardIssue.agent = patch.agent
@@ -472,12 +533,18 @@ export function demoIssueUpdate(
       demoIssueExtras[key] = { body: `${boardIssue.title}\n\n(No description.)`, agent: patch.agent, runs: [] }
     }
   }
+  if (patch.model !== undefined) {
+    if (patch.model === null) delete boardIssue.model
+    else boardIssue.model = patch.model
+  }
+  if (patch.effort !== undefined) {
+    if (patch.effort === null) delete boardIssue.effort
+    else boardIssue.effort = patch.effort
+  }
   return demoIssueDetail(wsId, id)
 }
 
-/** POST-comment backing: append a comment to the issue's markdown body (creating
- *  an extras entry for rows that only had the generic fallback body), then return
- *  the fresh detail shape. Returns null when the issue doesn't exist (→ 404). */
+/** POST-comment backing: append to the structured sidecar fixture. */
 export function demoIssueAddComment(
   wsId: string,
   id: string,
@@ -487,10 +554,65 @@ export function demoIssueAddComment(
   const boardIssue = findBoardIssue(wsId, id)
   if (!boardIssue) return null
   const key = `${wsId}/${id}`
-  const existing = demoIssueExtras[key]
-  const currentBody = existing?.body ?? `${boardIssue.title}\n\n(No description.)`
-  const nextBody = appendCommentToBody(currentBody, author, text)
-  if (existing) existing.body = nextBody
-  else demoIssueExtras[key] = { body: nextBody, runs: [] }
+  const comments = demoIssueComments[key] ?? []
+  const commentId = `demo-comment-${comments.length + 1}`
+  const ownerResumeId = boardIssue.assignee.startsWith('@resume-')
+    ? boardIssue.assignee.slice(1)
+    : `demo-reconstructed-${id}`
+  const taskId = `demo-comment-run-${comments.length + 1}`
+  comments.push({
+    id: commentId,
+    author,
+    at: new Date().toISOString(),
+    markdown: text,
+    delivery: { state: 'pending' as const, targetResumeId: ownerResumeId, taskId },
+  })
+  demoIssueComments[key] = comments
+  window.setTimeout(() => {
+    const source = comments.find((comment) => comment.id === commentId)
+    if (!source || source.delivery?.state !== 'pending') return
+    const replyCommentId = `demo-reply-${commentId}`
+    source.delivery = {
+      state: 'replied',
+      targetResumeId: ownerResumeId,
+      taskId,
+      replyCommentId,
+    }
+    comments.push({
+      id: replyCommentId,
+      author: `@${ownerResumeId}`,
+      at: new Date().toISOString(),
+      markdown: 'I saw the comment and will carry this context into the next pass.',
+      replyTo: commentId,
+    })
+  }, 900)
+  return demoIssueDetail(wsId, id)
+}
+
+/** POST-retry backing: add a fresh running execution without changing cadence. */
+export function demoIssueRetry(wsId: string, id: string): IssueDetail | null {
+  const boardIssue = findBoardIssue(wsId, id)
+  const extras = demoIssueExtras[`${wsId}/${id}`]
+  const latest = extras?.runs[0]
+  if (!boardIssue?.when || !extras || !latest || (latest.status !== 'failed' && latest.status !== 'interrupted')) {
+    return null
+  }
+  const run: IssueRunRecord = {
+    taskId: `demo-retry-${Date.now()}`,
+    resumeId: `demo-resume-retry-${Date.now()}`,
+    resumable: false,
+    wsId,
+    issueId: id,
+    agent: boardIssue.agent ?? extras.agent ?? latest.agent,
+    prompt: latest.prompt,
+    status: 'running',
+    startedAt: Date.now(),
+  }
+  extras.runs.unshift(run)
+  boardIssue.automationHealth = {
+    state: 'running',
+    message: 'A scheduled run is in progress.',
+    latestTaskId: run.taskId,
+  }
   return demoIssueDetail(wsId, id)
 }

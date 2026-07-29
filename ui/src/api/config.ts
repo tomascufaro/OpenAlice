@@ -100,6 +100,13 @@ export const configApi = {
 export interface WorkspaceCredentialDefault {
   credentialSlug: string
   model?: string
+  wireShape?: WireShape
+  /** Optional model-specific context preference. */
+  contextWindow?: number
+  /** Unknown-model override for Pi/opencode; known models auto-resolve. */
+  reasoning?: boolean
+  /** Model id the unknown-model override was decided for. */
+  reasoningModel?: string
 }
 
 /** GET /workspace-credential-defaults — current defaults + per-agent picker options. */

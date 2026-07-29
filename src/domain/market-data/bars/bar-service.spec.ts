@@ -54,6 +54,7 @@ describe('barId helpers', () => {
   it('rejects malformed', () => {
     expect(parseBarId('AAPL')).toBeNull()
     expect(parseBarId('|AAPL')).toBeNull()
+    expect(parseBarId('yfinance|')).toBeNull()
   })
 })
 
@@ -176,6 +177,21 @@ describe('getBars — UTA branch', () => {
     expect(meta.barCapability).toBe('realtime')
   })
 
+  it('rejects a UTA source that does not advertise historical-bar support', async () => {
+    const getHistorical = vi.fn(async () => WIRE)
+    const utaManager: UtaBarGateway = {
+      has: async (id) => id === 'ibkr',
+      get: async () => ({ getHistorical }),
+      searchContracts: async () => [],
+      getBarCapabilities: async () => ({}),
+    }
+    const svc = createBarService(makeDeps({ utaManager }))
+
+    await expect(svc.getBars({ barId: 'ibkr|AAPL' }, { interval: '1d' }))
+      .rejects.toThrow(/does not advertise historical-bar support/)
+    expect(getHistorical).not.toHaveBeenCalled()
+  })
+
   it('renders a daily broker bar date-only even when stamped at the session open (no 05:00 / DST noise)', async () => {
     // Alpaca stamps a daily bar at the premarket open (04:00/05:00 ET in UTC),
     // which also flips an hour across DST — render the calendar day, not an instant.
@@ -193,12 +209,10 @@ describe('getBars — UTA branch', () => {
     expect(bars.map((b) => b.date)).toEqual(['2026-02-17', '2026-06-25']) // date-only, no time, no DST flip
   })
 
-  it('count-only request becomes a START WINDOW, not a broker `limit` (alpaca count-anchoring bug)', async () => {
-    // A count-only request must reach the broker as a start-bounded window — NOT
-    // as `limit: count` with no start. Alpaca's getBarsV2 anchors `limit` to a
-    // default start and returns the FIRST N bars ascending, so `1d count=60`
-    // collapsed to a single in-progress daily bar. We over-fetch a window and
-    // tail-slice instead. Regression guard for the 2026-06-25 repro.
+  it('count-only request carries both a bounded window and a tail limit', async () => {
+    // The synthesized start bounds broker work; limit means "most-recent N"
+    // according to BarParams. Each adapter owns translating that semantic to
+    // upstream APIs that otherwise return the first N rows from `start`.
     const getHistorical = vi.fn(async (_ref: unknown, params: { start?: Date; limit?: number }) => {
       void params
       return WIRE
@@ -211,8 +225,8 @@ describe('getBars — UTA branch', () => {
     const svc = createBarService(makeDeps({ utaManager }))
     await svc.getBars({ barId: 'alpaca-paper|AAPL' }, { interval: '1d', count: 60 })
     const params = getHistorical.mock.calls[0][1]
-    expect(params.start).toBeInstanceOf(Date)       // count → synthesized start window
-    expect(params.limit).toBeUndefined()            // count is NOT forwarded as limit
+    expect(params.start).toBeInstanceOf(Date)
+    expect(params.limit).toBe(60)
   })
 })
 
@@ -264,6 +278,52 @@ describe('searchBarSources — federated candidates', () => {
     const uta = out.filter((c) => c.source === 'uta')
     expect(uta[0]).toMatchObject({ sourceId: 'okx-readonly', assetClass: 'crypto' })
     expect(uta[1]).toMatchObject({ sourceId: 'ibkr', assetClass: 'commodity' })
+  })
+
+  it('filters capability-less, blank, invalid, and duplicate UTA bar candidates', async () => {
+    const utaManager = {
+      has: async () => true,
+      get: async () => undefined,
+      getBarCapabilities: async () => ({ 'alpaca-paper': 'iex' }),
+      searchContracts: async () => [
+        { source: 'ibkr', contract: { aliceId: 'ibkr|AAPL', symbol: 'AAPL', secType: 'STK' }, derivativeSecTypes: [] },
+        { source: 'alpaca-paper', contract: { aliceId: 'alpaca-paper|-1', symbol: 'AAPL', secType: 'STK' }, derivativeSecTypes: [] },
+        { source: 'alpaca-paper', contract: { aliceId: 'not-a-bar-id', symbol: 'AAPL', secType: 'STK' }, derivativeSecTypes: [] },
+        { source: 'alpaca-paper', contract: { aliceId: 'alpaca-paper|EMPTY', symbol: '', secType: 'STK' }, derivativeSecTypes: [] },
+        { source: 'alpaca-paper', contract: { aliceId: 'alpaca-paper|AAPL', symbol: 'AAPL', secType: 'STK' }, derivativeSecTypes: [] },
+        { source: 'alpaca-paper', contract: { aliceId: 'alpaca-paper|AAPL', symbol: 'AAPL duplicate', secType: 'STK' }, derivativeSecTypes: [] },
+      ],
+    } as never
+
+    const out = await createBarService(makeDeps({ utaManager })).searchBarSources('AAPL')
+    const uta = out.filter((candidate) => candidate.source === 'uta')
+
+    expect(uta).toEqual([
+      expect.objectContaining({
+        barId: 'alpaca-paper|AAPL',
+        sourceId: 'alpaca-paper',
+        symbol: 'AAPL',
+        barCapability: 'iex',
+      }),
+    ])
+  })
+
+  it('applies the requested limit after relevance and freshness sorting', async () => {
+    const utaManager = {
+      has: async () => true,
+      get: async () => undefined,
+      searchContracts: async () => [
+        { source: 'alpaca-paper', contract: { aliceId: 'alpaca-paper|AAPL', symbol: 'AAPL', secType: 'STK' }, derivativeSecTypes: [] },
+        { source: 'alpaca-paper', contract: { aliceId: 'alpaca-paper|AAPL-RELATED', symbol: 'AAPL-RELATED', secType: 'STK' }, derivativeSecTypes: [] },
+      ],
+      getBarCapabilities: async () => ({ 'alpaca-paper': 'iex' }),
+    } as never
+
+    const out = await createBarService(makeDeps({ utaManager })).searchBarSources('AAPL', { limit: 1 })
+
+    expect(out).toHaveLength(1)
+    expect(out[0].symbol).toBe('AAPL')
+    expect(out[0].barCapability).toBe('iex')
   })
 
   it('survives one side failing (vendor still returns if UTA throws)', async () => {
