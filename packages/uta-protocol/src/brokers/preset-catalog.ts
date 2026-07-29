@@ -477,7 +477,7 @@ export const SIM_PRESET: BrokerPresetDef = {
   hint: 'No real credentials required. Market orders fill from the configured market-data quote with optional slippage; limit and stop orders fill lazily when quotes cross their trigger price.',
   defaultName: 'sim',
   badge: 'SIM',
-  badgeColor: 'text-yellow-400',
+  badgeColor: 'text-warning',
   engine: 'sim',
   guardCategory: 'securities',
   zodSchema: z.object({

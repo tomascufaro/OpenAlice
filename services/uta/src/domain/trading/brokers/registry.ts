@@ -1,11 +1,13 @@
 /**
  * Broker engine loader.
  *
- * Live engines are optional runtime packs. Mock is the only built-in engine
- * handled here, so UTA startup never evaluates an unused vendor SDK. (Sim is
- * also built-in but constructed directly by factory.ts, which needs to pass
- * it an extra quoteFetcher option this loader's generic signature has no
- * room for.)
+ * Live engines are optional runtime packs. Mock and sim are the only
+ * built-in engines handled directly here, so UTA startup never evaluates an
+ * unused vendor SDK. factory.ts constructs sim itself rather than going
+ * through loadBrokerEngine, since it needs to pass an extra quoteFetcher
+ * option this loader's generic createBroker(config) signature has no room
+ * for — the sim branch here only exists for generic callers (e.g. the
+ * preset↔engine round-trip test) that don't need that option.
  */
 
 import { pathToFileURL } from 'node:url'
@@ -13,6 +15,7 @@ import { resolve } from 'node:path'
 import type { z } from 'zod'
 import type { IBroker } from './types.js'
 import { MockBroker } from './mock/MockBroker.js'
+import { SimBroker } from './sim/index.js'
 import type { BrokerEngine } from '@traderalice/uta-protocol'
 import {
   BROKER_PACK_API_VERSION,
@@ -74,6 +77,14 @@ async function loadBrokerEngineUncached(engine: BrokerEngine): Promise<BrokerEng
     return {
       configSchema: MockBroker.configSchema,
       createBroker: (config) => Object.assign(MockBroker.fromConfig(config), { brokerEngine: 'mock' }),
+    }
+  }
+  if (engine === 'sim') {
+    // Generic path only — factory.ts constructs sim directly so it can pass
+    // the quoteFetcher option this signature has no room for.
+    return {
+      configSchema: SimBroker.configSchema,
+      createBroker: (config) => Object.assign(SimBroker.fromConfig(config), { brokerEngine: 'sim' }),
     }
   }
   if (!isInstallableBrokerEngine(engine)) throw new Error(`Unknown broker engine "${engine}"`)
