@@ -334,11 +334,11 @@ PTY pool, then shows:
 - only launcher-controlled environment contributions, grouped by terminal,
   Workspace, toolchain, and adapter ownership.
 
-The Shell utility is always present in this surface even when it is not listed
-as a Workspace agent runtime. Its plan uses the same launcher-built base
-environment and cwd as coding agents, so the injected `alice*` and `traderhub`
-CLI path and local tool transport remain visible. Shell does not receive an AI
-provider credential or another runtime's adapter-specific environment.
+The Shell utility is always present in this surface alongside the registered
+agent runtimes. Its plan uses the same launcher-built base environment and cwd
+as coding agents, so the injected `alice*` and `traderhub` CLI path and local
+tool transport remain visible. Shell does not receive an AI provider credential
+or another runtime's adapter-specific environment.
 
 Reading a launch plan never runs `prepareWorkspace`, writes native runtime
 configuration, or starts a process. The response omits inherited host
@@ -396,13 +396,27 @@ Do not add external-Pi version probing or upgrade UX to preserve flags used by
 the packaged runtime. Compatibility for the packaged app is maintained by
 pinning and upgrading the bundled Pi with the OpenAlice release.
 
-OpenAlice always updates trust in Pi's normal user agent directory (or an
-explicit user-provided `PI_CODING_AGENT_DIR`). Provider overrides do not change
-that directory: OpenAlice adds a namespaced provider to its `models.json` and
-uses the native Workspace `.pi/settings.json` layer to select it. This keeps
-Pi's global settings, packages, auth, resources, trust, and sessions visible.
-An old Workspace `.pi-agent/` tree is migrated into this native layout before
-launch and removed only after its configuration and session data are preserved.
+Source development and user-installed Pi update trust in Pi's normal user
+agent directory (or an explicit user-provided `PI_CODING_AGENT_DIR`). Provider
+overrides do not change that directory: OpenAlice adds a namespaced provider to
+its `models.json` and uses the native Workspace `.pi/settings.json` layer to
+select it. This keeps the user's global settings, packages, auth, resources,
+trust, and sessions visible.
+
+An installer-owned OpenAlice Runtime is a separate managed boundary. A launcher
+carrying `OPENALICE_MANAGED_PI_PATH` causes the selected complete home to set
+`PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` beneath that instance's
+complete home before Guardian starts. Managed settings, trust, resources, and
+sessions are therefore shared within one OpenAlice instance but isolated from
+another instance and from a Pi launched directly in the user's shell. The
+standalone installer-provided `pi` launcher intentionally does not set those
+overrides. The environment projection lives in the common local-Runtime
+environment builder, so TUI, lifecycle, and transitional `start`/`server`
+launch paths cannot diverge on this boundary.
+
+An old Workspace `.pi-agent/` tree is migrated into the applicable native
+agent-directory layout before launch and removed only after its configuration
+and session data are preserved.
 
 ### Codex interactive permissions
 
@@ -430,6 +444,14 @@ managed PortableGit directory.
 Do not add new Bash bootstraps for built-in templates. `bootstrap.sh` remains
 a compatibility fallback for third-party templates and only works where a
 POSIX shell exists.
+
+A source-backed Harness receives only repository, release, and exact commit
+values approved by its template catalog. AutoQuant V2 verifies that tuple,
+copies the repository, keeps its upstream ancestry and canonical `origin`,
+starts a local research branch at the approved commit, and writes
+`.alice/harness-source.json`. Bootstrap does not install Python or quantitative
+dependencies; the native Coding Agent owns environment setup, later research
+commits, and explicit fetch/merge upgrades inside the Workspace.
 
 OpenAlice copies Workspace skills into two canonical project paths:
 
@@ -468,6 +490,27 @@ directory packages may not have updater metadata, so the native check reports
 that it is unsupported and the shared version route remains the non-installing
 fallback. The top-level update banner and downloaded-update prompt remain
 secondary notifications over the same backend and updater state.
+
+The update UI must distinguish determinate download progress from the native
+installer handoff. Before closing, the old app reports `preparing`,
+`stopping-services`, `releasing-runtime`, and `handing-off` stages, releases
+the Guardian runtime lock, and emits a native notification that OpenAlice may
+remain closed for up to a minute. Do not invent an install percentage: the
+platform installer does not expose one to the old Electron process.
+
+Before the handoff, Electron atomically records
+`openalice-update-attempt.json` in its machine-local `userData` directory. The
+new version clears that marker on first launch. If the initiating version is
+still running after the bounded installer window, the marker is archived as
+`.failed` and a native error names the target version and desktop diagnostic
+log. This marker is updater evidence, not user-owned OpenAlice state, and does
+not belong under `OPENALICE_HOME`.
+
+Alice startup stderr is tee'd to the terminal and the bounded `desktop.log`
+under Electron's platform log directory. If Alice exits before the renderer is
+ready—or later exits unexpectedly—the desktop shows a native error with the
+last diagnostic lines and log path before cascading shutdown. A failed local
+backend must never present as an unexplained desktop flash-and-exit.
 
 Keep these true together:
 
@@ -528,6 +571,40 @@ output, tool use, and cleanup failures distinguishable. The Desktop Package
 Smoke matrix preserves these receipts as CI artifacts. Release candidates run
 the same acceptance on all three platform/architecture builds before any tag or
 GitHub Release is created; only accepted installers are then published.
+
+### N-1 desktop upgrade acceptance
+
+Fresh-package startup is not upgrade evidence. Every native Desktop Package
+Smoke job also downloads the newest published desktop release whose product
+version differs from the candidate, runs that real app against an isolated
+home, creates a Chat Workspace plus persisted metadata and browser state, then
+opens the same home with the unpacked candidate. Acceptance requires:
+
+- the candidate reports its expected version;
+- the N-1 Workspace id, display metadata, and renderer sentinel survive;
+- the candidate can create a new Workspace after migrations;
+- a second candidate launch reads both old and new state; and
+- every check is recorded in a versioned JSON receipt.
+
+The runner uses explicit temporary `OPENALICE_HOME`, `AQ_LAUNCHER_ROOT`,
+`OPENALICE_GLOBAL_DIR`, and Electron `userData` roots. It never reads normal
+desktop data, credentials, or preferences. The previous renderer is driven
+through a short-lived loopback DevTools endpoint so the test uses its real API
+and bootstrap code without adding a production smoke route.
+
+Release candidates repeat the journey against publication bytes. macOS expands
+the final signed architecture-specific ZIP; Windows silently installs N-1 and
+then runs the final NSIS installer over the same isolated install directory.
+Before either artifact is accepted, the release job parses the platform update
+YAML and recomputes the referenced file size and SHA-512, requires its blockmap,
+and verifies the candidate version. A failed upgrade receipt or byte mismatch
+blocks `publish-release`, so no tag, GitHub Release, or CDN mirror is created.
+
+This gate proves N-1 state compatibility and the shipped ZIP/NSIS bytes. macOS
+ShipIt replacement and signing/notarization remain native release mechanics;
+the updater status/handoff contract stays covered by desktop unit/UI tests and
+signed release rehearsal. Do not describe an unpacked-package PR smoke as proof
+that ShipIt itself replaced the application.
 
 Do not replace the actual shims with direct tool-function calls in this smoke:
 that would stop covering argv parsing, manifest discovery, managed Node,

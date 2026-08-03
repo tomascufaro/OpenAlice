@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { basename, dirname } from 'node:path'
@@ -6,11 +7,12 @@ import { fileURLToPath } from 'node:url'
 const CLI_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 
 export const DEFAULT_INSTALL_SOURCE = Object.freeze({
-  schemaVersion: 1,
+  schemaVersion: 2,
   repository: 'TraderAlice/OpenAlice',
   cliVersion: CLI_VERSION,
   selector: Object.freeze({ kind: 'branch', value: 'master' }),
   installerUrl: 'https://openalice.ai/install',
+  updateChannel: 'stable',
 })
 
 export async function readInstallSource(options = {}) {
@@ -40,8 +42,12 @@ export function parseInstallSource(value) {
   const kind = selector?.kind
   const ref = selector?.value
   const installerUrl = typeof value.installerUrl === 'string' ? value.installerUrl : ''
+  const schemaVersion = value.schemaVersion
+  const updateChannel = schemaVersion === 2
+    ? value.updateChannel
+    : inferLegacyUpdateChannel({ selector, installerUrl })
   if (
-    value.schemaVersion !== 1
+    ![1, 2].includes(schemaVersion)
     || repository !== 'TraderAlice/OpenAlice'
     || cliVersion.length < 1
     || !['branch', 'version'].includes(kind)
@@ -51,15 +57,17 @@ export function parseInstallSource(value) {
     || ref.includes('..')
     || !/^[A-Za-z0-9._/-]+$/.test(ref)
     || !isHttpUrl(installerUrl)
+    || !['stable', 'pinned', 'development', 'custom'].includes(updateChannel)
   ) {
     return null
   }
   return {
-    schemaVersion: 1,
+    schemaVersion,
     repository,
     cliVersion,
     selector: { kind, value: ref },
     installerUrl,
+    ...(schemaVersion === 2 ? { updateChannel } : {}),
   }
 }
 
@@ -78,6 +86,14 @@ export function installSourcesMatch(left, right) {
     && normalizedLeft.selector.kind === normalizedRight.selector.kind
     && normalizedLeft.selector.value === normalizedRight.selector.value
     && normalizedLeft.installerUrl === normalizedRight.installerUrl
+    && installSourceUpdateChannel(normalizedLeft) === installSourceUpdateChannel(normalizedRight)
+}
+
+export function installSourceUpdateChannel(source) {
+  const normalized = requireInstallSource(source)
+  return normalized.schemaVersion === 2
+    ? normalized.updateChannel
+    : inferLegacyUpdateChannel(normalized)
 }
 
 export function formatInstallSelector(source) {
@@ -85,14 +101,41 @@ export function formatInstallSelector(source) {
   return `${normalized.selector.kind} ${normalized.selector.value}`
 }
 
+export function managedSourceKey(source) {
+  const normalized = requireInstallSource(source)
+  const readable = `${normalized.selector.kind}-${normalized.selector.value}`
+    .replaceAll(/[^A-Za-z0-9._-]+/g, '-')
+    .replaceAll(/^-+|-+$/g, '')
+    .slice(0, 48) || 'source'
+  const digest = createHash('sha256')
+    .update(`${normalized.selector.kind}:${normalized.selector.value}`)
+    .digest('hex')
+    .slice(0, 8)
+  return `${readable}-${digest}`
+}
+
 function cloneInstallSource(source) {
   return {
-    schemaVersion: 1,
+    schemaVersion: source.schemaVersion,
     repository: source.repository,
     cliVersion: source.cliVersion,
     selector: { ...source.selector },
     installerUrl: source.installerUrl,
+    ...(source.schemaVersion === 2 ? { updateChannel: source.updateChannel } : {}),
   }
+}
+
+function inferLegacyUpdateChannel(source) {
+  if (source?.selector?.kind === 'version') return 'pinned'
+  if (
+    source?.selector?.kind === 'branch'
+    && source.selector.value === 'master'
+    && source.installerUrl === 'https://openalice.ai/install'
+  ) {
+    return 'stable'
+  }
+  if (source?.selector?.kind === 'branch' && source.selector.value === 'master') return 'custom'
+  return 'development'
 }
 
 function isHttpUrl(value) {

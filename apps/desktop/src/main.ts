@@ -21,7 +21,7 @@
  * Out of scope (future iterations): tray icon, multi-window, native menus.
  */
 
-import { app, BrowserWindow, dialog, Menu, protocol, session } from 'electron'
+import { app, BrowserWindow, dialog, Menu, Notification, protocol, session } from 'electron'
 import { runRendererTradingModeSmoke } from './trading-mode-smoke.js'
 import { runRendererDataHomeSmoke } from './data-home-smoke.js'
 import { runRendererWorkspaceAcceptanceSmoke } from './workspace-acceptance-smoke.js'
@@ -44,6 +44,7 @@ import { dirname, join, resolve } from 'node:path'
 import { probeFreePort } from './probe-port.js'
 import { relocateLegacyData } from './relocate-data.js'
 import { configureAutoUpdate } from './auto-update.js'
+import { BoundedTextTail, conciseDiagnosticTail, DesktopDiagnostics } from './desktop-diagnostics.js'
 import { fetchAliceWebRequest, handleOpenAliceIpcMessage, registerOpenAliceIpc } from './ipc.js'
 import { resolveManagedRuntimeEnv } from './managed-runtime.js'
 import { proxyEnvFromRules } from './proxy-env.js'
@@ -55,6 +56,8 @@ import {
   resolveDesktopDataHome,
   type ResolvedDesktopDataHome,
 } from './data-home-desktop.js'
+import { inspectPreviousUpdateAttempt, recordUpdateAttempt } from './update-attempt.js'
+import { childIsRunning, stopChild } from './child-shutdown.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -71,6 +74,10 @@ let rendererDataHomeSmokeStarted = false
 let rendererTradingModeSmokeStarted = false
 let rendererWorkspaceAcceptanceSmokeStarted = false
 let guardianRuntimeLock: RuntimeProcessLock | null = null
+let desktopDiagnostics: DesktopDiagnostics | null = null
+let aliceStderrTail = new BoundedTextTail()
+let aliceBecameReady = false
+let fatalDesktopErrorShown = false
 
 const DEFAULT_WEB_PORT_START = 47331
 const READY_TIMEOUT_MS = 30_000
@@ -78,6 +85,30 @@ const UTA_READY_TIMEOUT_MS = 15_000
 const SIGTERM_GRACE_MS = 5_000
 const UTA_RESTART_GRACE_MS = 8_000
 const DATA_HOME_PREFERENCES_FILE = 'openalice-data-home.json'
+const UPDATE_ATTEMPT_FILE = 'openalice-update-attempt.json'
+
+function showFatalDesktopError(title: string, message: string): void {
+  if (fatalDesktopErrorShown) return
+  fatalDesktopErrorShown = true
+  const childDetail = conciseDiagnosticTail(aliceStderrTail.text())
+  const logDetail = desktopDiagnostics ? `\n\nDiagnostic log:\n${desktopDiagnostics.path}` : ''
+  dialog.showErrorBox(
+    title,
+    `${message}${childDetail ? `\n\nLast Alice output:\n${childDetail}` : ''}${logDetail}`,
+  )
+}
+
+async function releaseGuardianRuntimeLock(): Promise<void> {
+  const current = guardianRuntimeLock
+  guardianRuntimeLock = null
+  await current?.release().catch((error) => {
+    console.error('[guardian] runtime lock release failed:', error)
+    desktopDiagnostics?.write(
+      'guardian',
+      `runtime lock release failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+    )
+  })
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -307,7 +338,7 @@ async function runRendererPtySmoke(win: BrowserWindow): Promise<void> {
       const created = await json(await fetch('/api/workspaces', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tag, template: 'chat', agents: ['shell'] }),
+        body: JSON.stringify({ tag, template: 'chat' }),
       }))
       workspaceId = created.workspace.id
       const spawned = await json(await fetch('/api/workspaces/' + encodeURIComponent(workspaceId) + '/sessions/spawn', {
@@ -504,6 +535,35 @@ async function runRendererOnboardingSmoke(win: BrowserWindow): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  desktopDiagnostics = new DesktopDiagnostics(join(app.getPath('logs'), 'desktop.log'))
+  desktopDiagnostics.write('desktop', `starting OpenAlice ${app.getVersion()} pid=${process.pid}`)
+  const updateAttemptPath = join(app.getPath('userData'), UPDATE_ATTEMPT_FILE)
+  try {
+    const previousUpdate = await inspectPreviousUpdateAttempt(updateAttemptPath, app.getVersion())
+    if (previousUpdate.kind === 'succeeded') {
+      desktopDiagnostics.write(
+        'updater',
+        `completed ${previousUpdate.attempt.fromVersion} -> ${previousUpdate.attempt.toVersion}`,
+      )
+    } else if (previousUpdate.kind === 'failed') {
+      desktopDiagnostics.write(
+        'updater',
+        `handoff did not complete ${previousUpdate.attempt.fromVersion} -> ${previousUpdate.attempt.toVersion}; evidence=${previousUpdate.archivedPath}`,
+      )
+      dialog.showErrorBox(
+        'OpenAlice update did not finish',
+        `The previous update to OpenAlice ${previousUpdate.attempt.toVersion} did not complete. ` +
+          `OpenAlice is still running ${app.getVersion()}.\n\n` +
+          `You can retry from Settings, or install the release manually.\n\nDiagnostic log:\n${desktopDiagnostics.path}`,
+      )
+    }
+  } catch (error) {
+    desktopDiagnostics.write(
+      'updater',
+      `could not inspect previous update attempt: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+    )
+  }
+
   // Build output lives at <repo>/dist/electron/main.js, <repo>/dist/main.js
   // (Alice), <repo>/services/uta/dist/uta.js (UTA), and the optional
   // <repo>/services/connector/dist/connector.js. The desktop package
@@ -752,6 +812,7 @@ app.whenReady().then(async () => {
   }
 
   const spawnAlice = (): ChildProcess => {
+    aliceStderrTail = new BoundedTextTail()
     const child = spawn(process.execPath, [aliceEntry], {
       env: {
         ...process.env,
@@ -776,8 +837,13 @@ app.whenReady().then(async () => {
       // The fourth fd opens Node child_process IPC. Electron app mode uses it
       // as the local PTY transport between BrowserWindow/preload and Alice's
       // WorkspaceService, while HTTP/WS remains the browser/dev/Docker plane.
-      stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
+      stdio: ['inherit', 'inherit', 'pipe', 'ipc'],
       serialization: 'advanced',
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      process.stderr.write(chunk)
+      aliceStderrTail.append(chunk)
+      desktopDiagnostics?.write('alice:stderr', chunk)
     })
     child.on('message', (msg) => {
       if (!handleOpenAliceIpcMessage(msg)) {
@@ -787,7 +853,16 @@ app.whenReady().then(async () => {
     })
     child.once('exit', (code, signal) => {
       if (appQuitting) return
-      console.error(`[guardian] Alice exited unexpectedly code=${code} signal=${signal}`)
+      const message = `Alice exited unexpectedly code=${code} signal=${signal}`
+      console.error(`[guardian] ${message}`)
+      desktopDiagnostics?.write('guardian', message)
+      showFatalDesktopError(
+        aliceBecameReady ? 'OpenAlice stopped unexpectedly' : 'OpenAlice could not start',
+        aliceBecameReady
+          ? 'The local Alice service stopped, so OpenAlice must close.'
+          : 'The local Alice service exited before the desktop window was ready.',
+      )
+      process.exitCode = 1
       shutdown()
     })
     return child
@@ -861,6 +936,7 @@ app.whenReady().then(async () => {
   alice = spawnAlice()
   console.log(`[guardian] Alice pid=${alice.pid} web=ipc mcpPort=${mcpPort ?? 'disabled'}`)
   await waitForAliceReady()
+  aliceBecameReady = true
 
   // Alice migrations can create connector-service.json from the retired
   // Telegram config. Reconcile after readiness so this upgrade starts the
@@ -1028,7 +1104,49 @@ app.whenReady().then(async () => {
   })
   win.loadURL('app://openalice/')
 
-  configureAutoUpdate(win, { beforeInstall: stopChildren })
+  configureAutoUpdate(win, {
+    beforeInstall: async (version, report) => {
+      await recordUpdateAttempt(updateAttemptPath, {
+        fromVersion: app.getVersion(),
+        toVersion: version,
+      })
+      desktopDiagnostics?.write('updater', `starting ${app.getVersion()} -> ${version}`)
+      report('stopping-services')
+      await stopChildren()
+      report('releasing-runtime')
+      await releaseGuardianRuntimeLock()
+    },
+    onInstallHandoff: (version) => {
+      desktopDiagnostics?.write('updater', `handing ${version} to the native installer`)
+      if (Notification.isSupported()) {
+        new Notification({
+          title: 'OpenAlice is updating',
+          body: `Installing ${version}. OpenAlice will reopen automatically; this can take up to a minute.`,
+        }).show()
+      }
+    },
+    onInstallFailure: (error) => {
+      desktopDiagnostics?.write('updater', `installer handoff failed: ${error.stack ?? error.message}`)
+      const recoveryMessage = appQuitting
+        ? 'OpenAlice will restart on the current version.'
+        : 'OpenAlice is still running on the current version.'
+      dialog.showErrorBox(
+        'OpenAlice update failed',
+        `${error.message}\n\n${recoveryMessage}\n\nDiagnostic log:\n${desktopDiagnostics?.path ?? app.getPath('logs')}`,
+      )
+      if (appQuitting) {
+        app.relaunch()
+        app.exit(1)
+      }
+    },
+  })
+}).catch((error) => {
+  const message = error instanceof Error ? error.stack ?? error.message : String(error)
+  console.error('[guardian] desktop startup failed:', error)
+  desktopDiagnostics?.write('guardian', `desktop startup failed: ${message}`)
+  showFatalDesktopError('OpenAlice could not start', error instanceof Error ? error.message : String(error))
+  process.exitCode = 1
+  shutdown()
 })
 
 async function stopManagedProcess(child: ChildProcess): Promise<void> {
@@ -1164,20 +1282,17 @@ async function startFlagWatcher(
 /** Cascade tree-kill every managed child. */
 async function stopChildren(): Promise<void> {
   appQuitting = true
-  const children = [uta, connector, alice].filter((c): c is ChildProcess => c != null && c.exitCode === null && !c.killed)
+  const children = [uta, connector, alice].filter((c): c is ChildProcess => c != null && childIsRunning(c))
   if (children.length === 0) return
   console.log(`[guardian] shutting down — SIGTERM → ${children.length} child(ren)`)
   await Promise.all(
-    children.map(async (c) => {
-      const exited = new Promise<void>((r) => c.once('exit', () => r()))
-      killTree(c, 'SIGTERM')
-      await Promise.race([exited, new Promise((r) => setTimeout(r, SIGTERM_GRACE_MS))])
-      if (c.exitCode === null && !c.killed) {
+    children.map((c) => stopChild(c, {
+      graceMs: SIGTERM_GRACE_MS,
+      sendSignal: (signal) => killTree(c, signal),
+      onForce: () => {
         console.warn(`[guardian] child pid=${c.pid} did not exit after ${SIGTERM_GRACE_MS}ms → SIGKILL`)
-        killTree(c, 'SIGKILL')
-        await exited
-      }
-    }),
+      },
+    })),
   )
 }
 
@@ -1185,9 +1300,7 @@ async function stopChildren(): Promise<void> {
 function shutdown(): void {
   if (appQuitting) return
   void stopChildren().finally(async () => {
-    const current = guardianRuntimeLock
-    guardianRuntimeLock = null
-    await current?.release().catch((err) => console.error('[guardian] runtime lock release failed:', err))
+    await releaseGuardianRuntimeLock()
     const exitCode = typeof process.exitCode === 'number' ? process.exitCode : 0
     app.exit(exitCode)
   })

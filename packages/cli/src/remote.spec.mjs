@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { readFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { PassThrough } from 'node:stream'
 
@@ -18,16 +19,20 @@ import {
   buildRemoteSshArgs,
   connectRemote,
   createRemotePlan,
+  formatRemotePlan,
   parseRemoteArgs,
   probeRemoteHost,
   readRememberedRemotePort,
   runSshCommand,
 } from './remote.mjs'
 
+const CLI_VERSION = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version
 const masterInstallSource = {
   schemaVersion: 1,
   repository: 'TraderAlice/OpenAlice',
-  cliVersion: '0.2.0',
+  cliVersion: CLI_VERSION,
   selector: { kind: 'branch', value: 'master' },
   installerUrl: 'https://openalice.ai/install',
 }
@@ -77,9 +82,23 @@ describe('OpenAlice managed remote connector', () => {
   it('builds a remote installer command from local provenance, not remote flags', () => {
     const command = buildRemoteInstallCommand(masterInstallSource)
     expect(command).toContain('OPENALICE_INSTALL_URL=')
+    expect(command).toContain("OPENALICE_INSTALL_UPDATE_CHANNEL='stable'")
     expect(command).toContain('OPENALICE_INSTALL_CONTEXT=remote')
     expect(command).toContain("--branch 'master'")
     expect(command).not.toContain('--version')
+  })
+
+  it('reproduces a stable release from its exact ref without pinning the remote channel', () => {
+    const command = buildRemoteInstallCommand({
+      schemaVersion: 2,
+      repository: 'TraderAlice/OpenAlice',
+      cliVersion: '0.89.0-beta',
+      selector: { kind: 'version', value: 'v0.89.0-beta' },
+      installerUrl: 'https://raw.githubusercontent.com/TraderAlice/OpenAlice/v0.89.0-beta/install',
+      updateChannel: 'stable',
+    })
+    expect(command).toContain("OPENALICE_INSTALL_UPDATE_CHANNEL='stable'")
+    expect(command).toContain("--version 'v0.89.0-beta'")
   })
 
   it('plans install and start separately, with no implicit takeover', () => {
@@ -101,7 +120,7 @@ describe('OpenAlice managed remote connector', () => {
     expect(plan.startServer).toBe(true)
     expect(plan.mutations).toEqual([
       'install remote OpenAlice CLI',
-      'install managed Pi 0.80.6',
+      'install managed Pi 0.83.0',
       'install source Runtime build tools',
       'start remote OpenAlice Server',
     ])
@@ -155,8 +174,8 @@ describe('OpenAlice managed remote connector', () => {
     expect(plan.restartServer).toBe(true)
     expect(plan.serverAppDir).toBe('/srv/OpenAlice')
     expect(plan.mutations).toEqual([
-      'install managed Pi 0.80.6',
-      'restart remote OpenAlice Server with managed Pi 0.80.6',
+      'install managed Pi 0.83.0',
+      'restart remote OpenAlice Server with managed Pi 0.83.0',
     ])
   })
 
@@ -168,7 +187,7 @@ describe('OpenAlice managed remote connector', () => {
     expect(plan.installRuntimeDeps).toBe(false)
     expect(plan.mutations).toEqual([
       'install remote OpenAlice CLI',
-      'install managed Pi 0.80.6',
+      'install managed Pi 0.83.0',
       'start remote OpenAlice Server',
     ])
   })
@@ -201,7 +220,7 @@ describe('OpenAlice managed remote connector', () => {
     expect(plan.installRuntimeDeps).toBe(true)
     expect(plan.mutations).toEqual([
       'install remote OpenAlice CLI',
-      'install managed Pi 0.80.6',
+      'install managed Pi 0.83.0',
       'install source Runtime build tools',
       'clone OpenAlice source (branch master)',
       'start remote OpenAlice Server',
@@ -220,6 +239,40 @@ describe('OpenAlice managed remote connector', () => {
     expect(plan.serverAppDir).toBe(remote.managedAppDir)
     expect(plan.cloneSource).toBe(true)
     expect(plan.mutations).toContain('clone OpenAlice source (branch master)')
+  })
+
+  it('starts an installed Runtime bundle without cloning source or build tools', () => {
+    const remote = {
+      ...compatibleRemote({
+        class: 'absent',
+        state: 'absent',
+        owner: null,
+        endpoints: {},
+      }),
+      managedRuntime: {
+        path: '/home/alice/.openalice/cli-versions/release/managed/runtime',
+        contentIdentity: '0123456789abcdef',
+        productVersion: CLI_VERSION,
+        platform: 'linux',
+        arch: 'x64',
+        compatible: true,
+      },
+      managedAppDir: '/home/alice/.openalice/sources/branch-master/OpenAlice',
+      sourceCheckoutState: 'absent',
+      sourceCheckoutPresent: false,
+      sourceArtifactsReady: false,
+      runtimeBuildToolsMissing: ['git', 'python3', 'make', 'cxx'],
+    }
+
+    const plan = createRemotePlan(parseRemoteArgs(['host']), remote)
+
+    expect(plan.sourceMode).toBe('installed-bundle')
+    expect(plan.bundledRuntime).toBe(true)
+    expect(plan.serverAppDir).toBe(remote.managedRuntime.path)
+    expect(plan.cloneSource).toBe(false)
+    expect(plan.installRuntimeDeps).toBe(false)
+    expect(plan.mutations).toEqual(['start remote OpenAlice Server'])
+    expect(formatRemotePlan(plan)).toContain('Not needed (installed Runtime)')
   })
 
   it('refuses to overwrite an occupied non-OpenAlice source path', () => {
@@ -327,9 +380,9 @@ describe('OpenAlice managed remote connector', () => {
       expect(command).toContain("--home '/data/openalice'")
       return [
         'cli=/home/alice/.openalice/bin/openalice',
-        'version=0.2.0',
+        `version=${CLI_VERSION}`,
         'identity=' + JSON.stringify({
-          version: '0.2.0',
+          version: CLI_VERSION,
           installSource: masterInstallSource,
           contentIdentity: '1234567890abcdef',
         }),
@@ -346,7 +399,7 @@ describe('OpenAlice managed remote connector', () => {
     expect(runRemote).toHaveBeenCalledOnce()
     expect(remote).toEqual(expect.objectContaining({
       cliPath: '/home/alice/.openalice/bin/openalice',
-      cliVersion: '0.2.0',
+      cliVersion: CLI_VERSION,
       cliContentIdentity: '1234567890abcdef',
       cliCompatible: true,
       status: expect.objectContaining({ class: 'running' }),
@@ -704,14 +757,14 @@ function compatibleRemote(statusOverrides = {}) {
     nodeVersion: 'v22.23.1',
     hasCurl: true,
     piPath: '/home/alice/.openalice/bin/pi',
-    piVersion: '0.80.6',
+    piVersion: '0.83.0',
     piCompatible: true,
     sourceCheckoutPresent: null,
     sourceCheckoutState: null,
     sourceArtifactsReady: null,
     runtimeBuildToolsMissing: [],
     cliPath: '/home/alice/.openalice/bin/openalice',
-    cliVersion: '0.2.0',
+    cliVersion: CLI_VERSION,
     installSource: masterInstallSource,
     cliCompatible: true,
     status: {
