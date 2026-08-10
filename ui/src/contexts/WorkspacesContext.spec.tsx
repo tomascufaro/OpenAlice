@@ -310,6 +310,24 @@ describe('WorkspacesProvider conversation routing', () => {
     ))
   })
 
+  it('keeps the current view open and reports a failed session resume', async () => {
+    mocks.resumeSession.mockRejectedValue(new Error('agent exited within startup window (code=1)'))
+    render(
+      <ToastProvider>
+        <WorkspacesProvider>
+          <ManagerProbe />
+        </WorkspacesProvider>
+      </ToastProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume manager' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'Could not resume this conversation: agent exited within startup window (code=1)',
+    )
+    expect(mocks.openOrFocus).not.toHaveBeenCalled()
+  })
+
   it('lands a deleted focused Session on its Workspace Session library', async () => {
     const focusedSession = materializedSession()
     mocks.listWorkspaces.mockResolvedValue([{ ...workspace(), sessions: [focusedSession] }])

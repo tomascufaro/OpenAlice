@@ -470,7 +470,14 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
   const resumeSession = useCallback(
     async (wsId: string, sessionId: string, source?: WorkspaceSource): Promise<void> => {
       await ensureTerminalAppearancePublished()
-      const resp = await apiResumeSession(wsId, sessionId)
+      let resp
+      try {
+        resp = await apiResumeSession(wsId, sessionId)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        toast.error(`Could not resume this conversation: ${message}`)
+        return
+      }
       const patch = {
         state: 'running' as const,
         surface: 'terminal' as const,
