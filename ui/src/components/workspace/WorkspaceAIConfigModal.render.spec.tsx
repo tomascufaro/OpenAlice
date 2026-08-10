@@ -194,6 +194,24 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '通用' }))
   })
 
+  it('separates Agent runtime diagnostics from AI preferences', async () => {
+    render(
+      <WorkspaceAIConfigModal
+        wsId="chat-1"
+        initialSection="launch"
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Agent Runtime' }).getAttribute('aria-current')).toBe('page')
+    expect(screen.getByText('实际启动预览')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'AI 偏好' }))
+    expect(await screen.findByText(/分别配置这个 Workspace 在不同场景下/)).toBeTruthy()
+    expect(screen.getByRole('tab', { name: '问 Alice' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: '议题' })).toBeTruthy()
+  })
+
   it('keeps compact settings chrome fixed around one scroll owner', async () => {
     render(
       <WorkspaceAIConfigModal
@@ -291,7 +309,7 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
     )
 
     fireEvent.change(await screen.findByPlaceholderText('gpt-5.5'), {
-      target: { value: 'gpt-5.6' },
+      target: { value: 'gpt-5.6-sol' },
     })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
@@ -301,7 +319,7 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
       expect.objectContaining({
         baseUrl: null,
         apiKey: null,
-        model: 'gpt-5.6',
+        model: 'gpt-5.6-sol',
       }),
     ))
     expect(mocks.testAgentConfig).not.toHaveBeenCalled()
@@ -379,7 +397,7 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
     const openAiPi = {
       ...savedPi,
       baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-5.6',
+      model: 'gpt-5.6-sol',
     }
     mocks.getAgentConfig.mockReset()
       .mockResolvedValueOnce({ claude: null, codex: null, opencode: null, pi: openAiPi })
@@ -397,7 +415,7 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
         defaultName: 'OpenAI',
         description: '',
         models: [{
-          id: 'gpt-5.6',
+          id: 'gpt-5.6-sol',
           label: 'GPT 5.6',
           semantics: {
             reasoning: {

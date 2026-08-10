@@ -1,11 +1,11 @@
 import {
   forwardRef,
   useEffect,
+  useId,
   useImperativeHandle,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
   type RefObject,
 } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -17,7 +17,6 @@ import {
   ChevronDown,
   Code2,
   Cpu,
-  Gauge,
   Info,
   KeyRound,
   Settings2,
@@ -25,6 +24,28 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { formatContextWindow, type AgentLaunchConfigState } from '../../hooks/useAgentLaunchConfig'
 
 const AGENT_ICONS: Record<string, LucideIcon> = {
@@ -34,9 +55,41 @@ const AGENT_ICONS: Record<string, LucideIcon> = {
   pi: Bot,
 }
 
+const PROVIDER_ACCESS_LABELS: Readonly<Record<string, string>> = {
+  anthropic: 'Anthropic API',
+  openai: 'OpenAI API',
+  google: 'Google Gemini API',
+  minimax: 'MiniMax API',
+  glm: 'Z.AI GLM API',
+  kimi: 'Kimi API',
+  deepseek: 'DeepSeek API',
+  longcat: 'LongCat API',
+}
+
+export function credentialAccessLabel(credential: AgentLaunchConfigState['credential']): string {
+  if (!credential) return ''
+  return PROVIDER_ACCESS_LABELS[credential.vendor.toLowerCase()]
+    || credential.label?.trim()
+    || credential.vendor
+}
+
+export function credentialAccessDetail(credential: AgentLaunchConfigState['credential']): string {
+  if (!credential) return ''
+  const label = credential.label?.trim()
+  return label && label !== credentialAccessLabel(credential)
+    ? `${label} · ${credential.slug}`
+    : credential.slug
+}
+
 export interface AgentLaunchSelectorsProps {
   readonly config: AgentLaunchConfigState
   readonly onConfigureProvider: () => void
+  readonly showRuntime?: boolean
+  readonly showAi?: boolean
+  readonly menuPlacement?: 'up' | 'down'
+  readonly labeled?: boolean
+  /** Visually recede selectors into a composer toolbar until hover/focus. */
+  readonly toolbar?: boolean
 }
 
 export interface AgentLaunchSelectorsHandle {
@@ -84,10 +137,319 @@ function handleMenuKeyDown(
   items[nextIndex]?.focus()
 }
 
-/** The shared runtime + credential selector used by every chat-style launch
+function AgentLaunchModelEditor({
+  config,
+  labeled = false,
+}: {
+  config: AgentLaunchConfigState
+  labeled?: boolean
+}) {
+  const { t } = useTranslation()
+  const listId = useId()
+  const [draft, setDraft] = useState(config.launchModel ?? '')
+
+  useEffect(() => setDraft(config.launchModel ?? ''), [config.launchModel])
+
+  const commit = () => {
+    const next = draft.trim()
+    if (next !== (config.launchModel ?? '')) config.selectModel(next || null)
+  }
+  const defaultLabel = config.defaultModel
+    ? t('chatLanding.defaultModelValue', { model: config.defaultModel })
+    : t('chatLanding.runtimeDefaultModel')
+  const contextLabel = config.aiDetails?.contextWindow
+    ? t('chatLanding.contextSummary', {
+        limit: formatContextWindow(config.aiDetails.contextWindow),
+      })
+    : undefined
+
+  return (
+    <label className={`relative inline-flex min-w-0 items-center rounded-md bg-muted text-[11px] text-muted-foreground focus-within:ring-1 focus-within:ring-primary/50 ${labeled ? 'min-h-12 w-full max-w-none sm:w-auto sm:max-w-[220px]' : 'min-h-8 max-w-[220px]'}`}>
+      <Cpu className={`pointer-events-none absolute left-2.5 h-3 w-3 shrink-0 ${labeled ? 'top-6' : ''}`} />
+      {labeled && (
+        <span className="pointer-events-none absolute left-2.5 top-1.5 text-[9.5px] font-medium text-muted-foreground">
+          {t('chatLanding.modelField')}
+        </span>
+      )}
+      <input
+        list={listId}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur()
+          if (event.key === 'Escape') {
+            setDraft(config.launchModel ?? '')
+            event.currentTarget.blur()
+          }
+        }}
+        aria-label={t('chatLanding.selectModel')}
+        title={contextLabel}
+        placeholder={defaultLabel}
+        className={`min-w-0 bg-transparent pl-7 pr-2 text-[11px] text-foreground outline-none placeholder:text-muted-foreground ${labeled ? 'w-full pb-1 pt-5 sm:w-[190px]' : 'w-[190px] py-1'}`}
+      />
+      <datalist id={listId}>
+        {config.modelOptions.map((model) => (
+          <option key={model.id} value={model.id}>{model.label}</option>
+        ))}
+      </datalist>
+    </label>
+  )
+}
+
+function AgentLaunchEffortEditor({
+  config,
+  labeled = false,
+}: {
+  config: AgentLaunchConfigState
+  labeled?: boolean
+}) {
+  const { t } = useTranslation()
+  const current = config.selectedReasoningEffort
+  const options = current && !config.effortOptions.includes(current)
+    ? [current, ...config.effortOptions]
+    : config.effortOptions
+  const details = config.aiDetails
+  const resolvedDefault = details?.reasoningEffort
+    ? t('chatLanding.reasoningEffortSummary', { effort: details.reasoningEffort })
+    : details?.reasoningMode === 'required'
+      ? t('chatLanding.reasoningRequiredSummary')
+      : details?.reasoningMode === 'adaptive'
+        ? t('chatLanding.reasoningAdaptiveSummary')
+        : details?.reasoningMode === 'none' || details?.reasoning === false
+          ? t('chatLanding.reasoningDisabledSummary')
+          : details?.reasoning === true
+            ? t('chatLanding.reasoningEnabledSummary')
+            : details?.reasoningMode === 'optional'
+              ? t('chatLanding.reasoningOptionalSummary')
+              : t('chatLanding.reasoningRuntimeSummary')
+  const defaultLabel = details
+    ? t('chatLanding.defaultEffortValue', { effort: resolvedDefault })
+    : t('chatLanding.defaultEffort')
+  return (
+    <label className={`relative inline-flex min-w-0 items-center rounded-md bg-muted text-[11px] text-muted-foreground focus-within:ring-1 focus-within:ring-primary/50 ${labeled ? 'min-h-12 w-full max-w-none sm:w-auto sm:max-w-[190px]' : 'min-h-8 max-w-[190px]'}`}>
+      <BrainCircuit className={`pointer-events-none absolute left-2.5 h-3 w-3 shrink-0 ${labeled ? 'top-6' : ''}`} />
+      {labeled && (
+        <span className="pointer-events-none absolute left-2.5 top-1.5 text-[9.5px] font-medium text-muted-foreground">
+          {t('chatLanding.effortField')}
+        </span>
+      )}
+      <select
+        value={current ?? ''}
+        onChange={(event) => config.selectReasoningEffort(
+          event.target.value
+            ? event.target.value as NonNullable<AgentLaunchConfigState['launchReasoningEffort']>
+            : null,
+        )}
+        aria-label={t('chatLanding.selectEffort')}
+        className={`min-w-0 appearance-none bg-transparent pl-7 pr-7 text-[11px] text-foreground outline-none ${labeled ? 'w-full max-w-none pb-1 pt-5 sm:max-w-[190px]' : 'max-w-[190px] py-1'}`}
+      >
+        <option value="">{defaultLabel}</option>
+        {options.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 h-3 w-3 opacity-60" />
+    </label>
+  )
+}
+
+function AgentLaunchInferenceMenu({
+  config,
+  menuPlacement,
+}: {
+  config: AgentLaunchConfigState
+  menuPlacement: 'up' | 'down'
+}) {
+  const { t } = useTranslation()
+  const pendingCustomModelRef = useRef(false)
+  const [customModelOpen, setCustomModelOpen] = useState(false)
+  const [customModelDraft, setCustomModelDraft] = useState('')
+
+  const details = config.aiDetails
+  const resolvedEffort = config.launchReasoningEffort
+    ? t('chatLanding.reasoningEffortSummary', { effort: config.launchReasoningEffort })
+    : details?.reasoningEffort
+      ? t('chatLanding.reasoningEffortSummary', { effort: details.reasoningEffort })
+      : details?.reasoningMode === 'required'
+        ? t('chatLanding.reasoningRequiredSummary')
+        : details?.reasoningMode === 'adaptive'
+          ? t('chatLanding.reasoningAdaptiveSummary')
+          : details?.reasoningMode === 'none' || details?.reasoning === false
+            ? t('chatLanding.reasoningDisabledSummary')
+            : details?.reasoning === true
+              ? t('chatLanding.reasoningEnabledSummary')
+              : details?.reasoningMode === 'optional'
+                ? t('chatLanding.reasoningOptionalSummary')
+                : t('chatLanding.reasoningRuntimeSummary')
+  const resolvedModel = config.launchModel
+    ?? config.defaultModel
+    ?? t('chatLanding.runtimeDefaultModel')
+  const modelValue = config.launchModel ?? ''
+  const effortValue = config.selectedReasoningEffort ?? ''
+  const effortOptions = config.selectedReasoningEffort
+    && !config.effortOptions.includes(config.selectedReasoningEffort)
+    ? [config.selectedReasoningEffort, ...config.effortOptions]
+    : config.effortOptions
+  const knownModels = config.modelOptions.filter((model) => model.id !== config.defaultModel)
+  const customCurrentModel = config.launchModel
+    && !config.modelOptions.some((model) => model.id === config.launchModel)
+    ? config.launchModel
+    : null
+
+  const saveCustomModel = () => {
+    const model = customModelDraft.trim()
+    if (!model) return
+    config.selectModel(model)
+    setCustomModelOpen(false)
+  }
+
+  return (
+    <>
+      <DropdownMenu
+        onOpenChangeComplete={(open) => {
+          if (open || !pendingCustomModelRef.current) return
+          pendingCustomModelRef.current = false
+          setCustomModelOpen(true)
+        }}
+      >
+        <DropdownMenuTrigger
+          render={<button
+            type="button"
+            aria-label={t('chatLanding.selectModelAndEffort')}
+            className="oa-pressable inline-flex min-h-8 max-w-[280px] items-center gap-1.5 rounded-md bg-transparent px-1.5 py-1 text-[11px] text-foreground transition-colors hover:bg-muted/55"
+          />}
+        >
+          <Cpu className="h-3 w-3 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 truncate">{resolvedModel}</span>
+          <span className="shrink-0 text-muted-foreground">· {resolvedEffort}</span>
+          <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="start"
+          side={menuPlacement === 'down' ? 'bottom' : 'top'}
+          sideOffset={6}
+          aria-label={t('chatLanding.selectModelAndEffort')}
+          className="w-[280px] max-w-[calc(100vw-2rem)] rounded-xl border border-border/70 bg-secondary p-1.5 shadow-lg ring-0"
+        >
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="min-h-10 px-2.5 py-2 text-[12px]">
+              <span className="font-medium">{t('chatLanding.modelField')}</span>
+              <span className="ml-auto max-w-[140px] truncate text-muted-foreground">{resolvedModel}</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-[280px] max-w-[calc(100vw-2rem)] border border-border/70 bg-secondary p-1.5 shadow-lg ring-0">
+              <DropdownMenuRadioGroup
+                value={modelValue}
+                onValueChange={(value) => config.selectModel(value ? String(value) : null)}
+              >
+                <DropdownMenuRadioItem value="" closeOnClick={false} className="min-h-9 px-2.5 pr-8 text-[12px]">
+                  <span className="min-w-0 flex-1 truncate">
+                    {config.defaultModel
+                      ? t('chatLanding.defaultModelValue', { model: config.defaultModel })
+                      : t('chatLanding.runtimeDefaultModel')}
+                  </span>
+                </DropdownMenuRadioItem>
+                {customCurrentModel && (
+                  <DropdownMenuRadioItem value={customCurrentModel} closeOnClick={false} className="min-h-9 px-2.5 pr-8 text-[12px]">
+                    <span className="min-w-0 flex-1 truncate">{customCurrentModel}</span>
+                  </DropdownMenuRadioItem>
+                )}
+                {knownModels.map((model) => (
+                  <DropdownMenuRadioItem key={model.id} value={model.id} closeOnClick={false} className="min-h-9 px-2.5 pr-8 text-[12px]">
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{model.label}</span>
+                      {model.label !== model.id && (
+                        <span className="block truncate text-[10px] text-muted-foreground">{model.id}</span>
+                      )}
+                    </span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="min-h-9 px-2.5 text-[12px]"
+                onClick={() => {
+                  setCustomModelDraft(config.launchModel ?? config.defaultModel ?? '')
+                  pendingCustomModelRef.current = true
+                }}
+              >
+                {t('chatLanding.customModel')}
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="min-h-10 px-2.5 py-2 text-[12px]">
+              <span className="font-medium">{t('chatLanding.effortField')}</span>
+              <span className="ml-auto max-w-[140px] truncate text-muted-foreground">{resolvedEffort}</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-[220px] max-w-[calc(100vw-2rem)] border border-border/70 bg-secondary p-1.5 shadow-lg ring-0">
+              <DropdownMenuRadioGroup
+                value={effortValue}
+                onValueChange={(value) => config.selectReasoningEffort(
+                  value ? String(value) as NonNullable<AgentLaunchConfigState['launchReasoningEffort']> : null,
+                )}
+              >
+                <DropdownMenuRadioItem value="" closeOnClick={false} className="min-h-9 px-2.5 pr-8 text-[12px]">
+                  <span className="min-w-0 flex-1 truncate">
+                    {t('chatLanding.defaultEffortValue', { effort: resolvedEffort })}
+                  </span>
+                </DropdownMenuRadioItem>
+                {effortOptions.map((effort) => (
+                  <DropdownMenuRadioItem key={effort} value={effort} closeOnClick={false} className="min-h-9 px-2.5 pr-8 text-[12px]">
+                    {t('chatLanding.reasoningEffortSummary', { effort })}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <Dialog open={customModelOpen} onOpenChange={setCustomModelOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('chatLanding.customModelTitle')}</DialogTitle>
+            <DialogDescription>{t('chatLanding.customModelDescription')}</DialogDescription>
+          </DialogHeader>
+          <input
+            value={customModelDraft}
+            onChange={(event) => setCustomModelDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                saveCustomModel()
+              }
+            }}
+            aria-label={t('chatLanding.customModelId')}
+            placeholder={t('chatLanding.customModelId')}
+            autoFocus
+            className="min-h-9 w-full rounded-lg border border-border bg-background px-3 text-[12px] text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary/30"
+          />
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>
+              {t('common.cancel')}
+            </DialogClose>
+            <Button onClick={saveCustomModel} disabled={!customModelDraft.trim()}>
+              {t('common.save')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+/** Shared runtime and AI-access selectors used by every chat-style launch
  * surface. Selection behavior and presentation now evolve together. */
 export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, AgentLaunchSelectorsProps>(function AgentLaunchSelectors(
-  { config, onConfigureProvider },
+  {
+    config,
+    onConfigureProvider,
+    showRuntime = true,
+    showAi = true,
+    menuPlacement = 'up',
+    labeled = false,
+    toolbar = false,
+  },
   ref,
 ) {
   const { t } = useTranslation()
@@ -102,6 +464,23 @@ export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, Agent
   const agentFocusEdgeRef = useRef<'first' | 'last'>('first')
   const credentialFocusEdgeRef = useRef<'first' | 'last'>('first')
   const SelectedIcon = config.selectedAgent ? AGENT_ICONS[config.selectedAgent.id] : undefined
+  const runtimeName = config.selectedAgent?.displayName ?? t('chatLanding.runtimeFallback')
+  const workspaceAccess = config.accessMode === 'auto' && config.detectedCredential?.configured === true
+  const nativeAccess = config.accessMode === 'native' || (
+    config.accessMode === 'auto' && !workspaceAccess && config.effectiveCredential === null
+  )
+  const selectedAccessLabel = nativeAccess
+    ? t('chatLanding.runtimeAccount', { runtime: runtimeName })
+    : config.credential
+      ? credentialAccessLabel(config.credential)
+      : t('chatLanding.workspaceAiAccess')
+  const selectedAccessDetail = nativeAccess
+    ? t('chatLanding.runtimeAccountDetail')
+    : config.credential
+      ? workspaceAccess
+        ? t('chatLanding.workspaceAccessDetail', { credential: credentialAccessDetail(config.credential) })
+        : t('chatLanding.savedAccessDetail', { credential: credentialAccessDetail(config.credential) })
+      : config.detectedCredential?.model ?? t('chatLanding.workspaceAccessDetailFallback')
 
   useImperativeHandle(ref, () => ({
     openAgentMenu() {
@@ -140,7 +519,7 @@ export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, Agent
 
   return (
     <>
-      <div
+      {showRuntime && <div
         ref={agentBoxRef}
         className="relative"
         onBlur={(event) => {
@@ -183,7 +562,7 @@ export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, Agent
               () => setAgentMenuOpen(false),
               agentTriggerRef,
             )}
-            className="oa-popover-enter absolute bottom-full left-0 z-20 mb-1 min-w-[180px] rounded-lg border border-border/70 bg-secondary py-1 shadow-lg"
+            className={`oa-popover-enter absolute left-0 z-20 min-w-[180px] rounded-lg border border-border/70 bg-secondary py-1 shadow-lg ${menuPlacement === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'}`}
           >
             {config.agents.map((agent) => {
               const Icon = AGENT_ICONS[agent.id]
@@ -211,9 +590,9 @@ export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, Agent
             })}
           </div>
         )}
-      </div>
+      </div>}
 
-      {config.needsCredential && config.noCredentials && (
+      {showAi && config.needsCredential && config.noCredentials && (
         <button
           type="button"
           onClick={onConfigureProvider}
@@ -224,10 +603,10 @@ export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, Agent
         </button>
       )}
 
-      {config.needsCredential && !config.noCredentials && config.credentials && config.credentials.length > 0 && (
+      {showAi && config.canSelectCredential && !config.noCredentials && config.credentials && (
         <div
           ref={credentialBoxRef}
-          className="relative"
+          className={`relative ${labeled ? 'w-full sm:w-auto' : ''}`}
           onBlur={(event) => {
             const next = event.relatedTarget as Node | null
             if (!next || !event.currentTarget.contains(next)) setCredentialMenuOpen(false)
@@ -251,11 +630,19 @@ export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, Agent
             aria-haspopup="menu"
             aria-expanded={credentialMenuOpen}
             aria-label={t('chatLanding.selectCredential')}
-            className="oa-pressable inline-flex min-h-8 max-w-[190px] items-center gap-1.5 rounded-md bg-muted px-2.5 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+            className={`oa-pressable inline-flex items-center gap-2 rounded-md text-left text-muted-foreground transition-colors hover:text-foreground ${toolbar ? 'bg-transparent px-1.5 hover:bg-muted/55' : 'bg-muted px-2.5'} ${labeled ? 'min-h-12 w-full max-w-none py-1.5 sm:w-auto sm:max-w-[240px]' : toolbar ? 'min-h-8 max-w-[200px] py-1' : 'min-h-8 max-w-[240px] py-1'}`}
           >
             <KeyRound className="h-3 w-3 shrink-0" />
-            <span className="truncate">
-              {config.credential?.label?.trim() || config.credential?.slug || t('chatLanding.selectCredential')}
+            <span className="min-w-0 flex-1">
+              {labeled && (
+                <span className="block truncate text-[9.5px] font-medium text-muted-foreground">
+                  {t('chatLanding.aiAccess')}
+                </span>
+              )}
+              <span className="block truncate text-[11px] text-foreground">{selectedAccessLabel}</span>
+              {labeled && (
+                <span className="block truncate text-[9.5px] text-muted-foreground">{selectedAccessDetail}</span>
+              )}
             </span>
             <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
           </button>
@@ -269,10 +656,56 @@ export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, Agent
                 () => setCredentialMenuOpen(false),
                 credentialTriggerRef,
               )}
-              className="oa-popover-enter absolute bottom-full left-0 z-20 mb-1 min-w-[200px] rounded-lg border border-border/70 bg-secondary py-1 shadow-lg"
+              className={`oa-popover-enter absolute left-0 z-20 max-h-[min(24rem,calc(100vh-8rem))] min-w-[240px] overflow-y-auto overscroll-contain rounded-lg border border-border/70 bg-secondary py-1 shadow-lg [scrollbar-gutter:stable] ${menuPlacement === 'down' ? 'top-full mt-1' : 'bottom-full mb-1'}`}
             >
+              <div
+                role="presentation"
+                className="border-b border-border/60 px-3 py-2 text-[11px] font-medium text-muted-foreground"
+              >
+                {t('chatLanding.credentialMenuTitle', { runtime: runtimeName })}
+              </div>
+              {config.detectedCredential?.configured === true && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  onClick={() => {
+                    config.selectWorkspaceDefault()
+                    setCredentialMenuOpen(false)
+                    credentialTriggerRef.current?.focus()
+                  }}
+                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors hover:bg-muted ${config.accessMode === 'auto' ? 'text-primary' : 'text-foreground'}`}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{t('chatLanding.workspaceAiAccess')}</span>
+                    {config.detectedCredential.model && (
+                      <span className="block truncate text-[10px] text-muted-foreground">{config.detectedCredential.model}</span>
+                    )}
+                  </span>
+                  {config.accessMode === 'auto' && <Check className="h-3.5 w-3.5 shrink-0" />}
+                </button>
+              )}
+              {(
+                <button
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  onClick={() => {
+                    config.selectRuntimeDefault()
+                    setCredentialMenuOpen(false)
+                    credentialTriggerRef.current?.focus()
+                  }}
+                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors hover:bg-muted ${config.accessMode === 'native' ? 'text-primary' : 'text-foreground'}`}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{t('chatLanding.runtimeAccount', { runtime: runtimeName })}</span>
+                    <span className="block truncate text-[10px] text-muted-foreground">{t('chatLanding.runtimeAccountDetail')}</span>
+                  </span>
+                  {config.accessMode === 'native' && <Check className="h-3.5 w-3.5 shrink-0" />}
+                </button>
+              )}
               {config.credentials.map((credential) => {
-                const active = credential.slug === config.effectiveCredential
+                const active = config.accessMode === 'vault' && credential.slug === config.effectiveCredential
                 return (
                   <button
                     key={credential.slug}
@@ -284,20 +717,38 @@ export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, Agent
                       setCredentialMenuOpen(false)
                       credentialTriggerRef.current?.focus()
                     }}
-                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-muted ${active ? 'text-primary' : 'text-foreground'}`}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors hover:bg-muted ${active ? 'text-primary' : 'text-foreground'}`}
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate">{credential.label?.trim() || credential.slug}</span>
-                      {credential.resolvedModel && (
-                        <span className="block truncate text-[10px] text-muted-foreground">{credential.resolvedModel}</span>
-                      )}
+                      <span className="block truncate">{credentialAccessLabel(credential)}</span>
+                      <span className="block truncate text-[10px] text-muted-foreground">
+                        {t('chatLanding.savedAccessDetail', { credential: credentialAccessDetail(credential) })}
+                      </span>
                     </span>
-                    <span className="shrink-0 text-[10px] text-muted-foreground">{credential.vendor}</span>
+                    {credential.resolvedModel && (
+                      <span className="max-w-[100px] shrink-0 truncate text-[10px] text-muted-foreground">{credential.resolvedModel}</span>
+                    )}
                     {active && <Check className="h-3.5 w-3.5 shrink-0" />}
                   </button>
                 )
               })}
             </div>
+          )}
+        </div>
+      )}
+
+      {showAi && config.selectedAgent && (
+        <div
+          data-testid="agent-launch-inference-group"
+          className={`contents sm:flex sm:shrink-0 sm:items-center ${toolbar ? 'sm:gap-1' : 'sm:gap-2'}`}
+        >
+          {toolbar ? (
+            <AgentLaunchInferenceMenu config={config} menuPlacement={menuPlacement} />
+          ) : (
+            <>
+              <AgentLaunchModelEditor config={config} labeled={labeled} />
+              <AgentLaunchEffortEditor config={config} labeled={labeled} />
+            </>
           )}
         </div>
       )}
@@ -308,127 +759,59 @@ export const AgentLaunchSelectors = forwardRef<AgentLaunchSelectorsHandle, Agent
 export interface AgentLaunchDetailsProps {
   readonly config: AgentLaunchConfigState
   readonly hasWorkspaceTarget: boolean
-  readonly onAdjustAi: () => void
+  readonly onAdjustAi?: () => void
+  readonly showScopeDisclosure?: boolean
   readonly className?: string
 }
 
-/** Compact, truthful launch metadata. Workspace-local config always wins the
- * disclosure, while absent native fields remain unknown rather than inferred. */
+/** Compact launch scope. Model and effort belong in their editors above; this
+ * row only explains where the selected tuple applies and links to its owner. */
 export function AgentLaunchDetails({
   config,
   hasWorkspaceTarget,
   onAdjustAi,
+  showScopeDisclosure = true,
   className = '',
 }: AgentLaunchDetailsProps) {
   const { t } = useTranslation()
 
   if (hasWorkspaceTarget && !config.workspaceConfigResolved) return null
 
-  let summary: ReactNode = null
-  let pendingWriteNotice: ReactNode = null
-  if (config.aiDetails) {
-    const model = config.aiDetails.model ?? t('chatLanding.runtimeDefaultModel')
+  let scope: {
+    label: string
+    detail?: string
+    actionLabel?: string
+  } | null = null
+  if (showScopeDisclosure && config.aiDetails) {
     const workspaceSaved = config.aiDetails.source === 'workspace'
-    const actionLabel = hasWorkspaceTarget
-      ? workspaceSaved
-        ? t('chatLanding.adjustWorkspaceAi')
-        : t('chatLanding.configureWorkspaceAi')
-      : t('chatLanding.providerSettings')
-    const reasoningLabel = config.aiDetails.reasoningEffort
-      ? t('chatLanding.reasoningEffortSummary', { effort: config.aiDetails.reasoningEffort })
-      : config.aiDetails.reasoningMode === 'required'
-        ? t('chatLanding.reasoningRequiredSummary')
-        : config.aiDetails.reasoningMode === 'adaptive'
-          ? t('chatLanding.reasoningAdaptiveSummary')
-          : config.aiDetails.reasoningMode === 'none' || config.aiDetails.reasoning === false
-            ? t('chatLanding.reasoningDisabledSummary')
-            : config.aiDetails.reasoning === true
-              ? t('chatLanding.reasoningEnabledSummary')
-              : config.aiDetails.reasoningMode === 'optional'
-                ? t('chatLanding.reasoningOptionalSummary')
-                : t('chatLanding.reasoningRuntimeSummary')
-    summary = (
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-muted-foreground">
-        <span
-          className="inline-flex min-w-0 max-w-full items-center gap-1"
-          aria-label={t('chatLanding.modelSummary', { model })}
-          title={model}
-        >
-          <Cpu className="h-3 w-3 shrink-0" />
-          <span className="truncate font-mono text-foreground/80">{model}</span>
-        </span>
-        <span aria-hidden className="text-muted-foreground/40">·</span>
-        <span
-          className="inline-flex shrink-0 items-center gap-1"
-          aria-label={reasoningLabel}
-        >
-          <BrainCircuit className="h-3 w-3" />
-          {reasoningLabel}
-        </span>
-        {config.aiDetails.contextWindow !== null && (
-          <>
-            <span aria-hidden className="text-muted-foreground/40">·</span>
-            <span
-              className="inline-flex shrink-0 items-center gap-1"
-              aria-label={t('chatLanding.contextSummary', {
-                limit: formatContextWindow(config.aiDetails.contextWindow),
-              })}
-            >
-              <Gauge className="h-3 w-3" />
-              {t('chatLanding.contextSummary', {
-                limit: formatContextWindow(config.aiDetails.contextWindow),
-              })}
-            </span>
-          </>
-        )}
-        <button
-          type="button"
-          onClick={onAdjustAi}
-          className="oa-pressable inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-primary hover:bg-primary/10 sm:ml-auto"
-          aria-label={actionLabel}
-          title={actionLabel}
-        >
-          <Settings2 className="h-3 w-3" />
-          {actionLabel}
-        </button>
-      </div>
-    )
-    if (!workspaceSaved) {
-      pendingWriteNotice = (
-        <div
-          role="status"
-          className="flex min-w-0 items-start gap-1.5 rounded-md bg-primary/[0.06] px-2 py-1.5 text-[10.5px] leading-relaxed text-primary"
-        >
-          <Info className="mt-0.5 h-3 w-3 shrink-0" />
-          <span>
-            {hasWorkspaceTarget
-              ? t('chatLanding.workspaceAiWillInject')
-              : t('chatLanding.newWorkspaceAiWillSeed')}
-          </span>
-        </div>
-      )
+    const actionLabel = onAdjustAi
+      ? hasWorkspaceTarget
+        ? workspaceSaved
+          ? t('chatLanding.adjustWorkspaceAi')
+          : t('chatLanding.configureWorkspaceAi')
+        : t('chatLanding.providerSettings')
+      : undefined
+    scope = workspaceSaved
+      ? {
+          label: t('chatLanding.workspaceAiScope'),
+          actionLabel,
+        }
+      : {
+          label: t('chatLanding.newSessionAiScope'),
+          actionLabel,
+        }
+  } else if (
+    showScopeDisclosure &&
+    config.selectedAgent &&
+    (!config.needsCredential || config.selectedRuntimeUsesGlobalConfig)
+  ) {
+    scope = {
+      label: t('chatLanding.runtimeAiScope', { runtime: config.selectedAgent.displayName }),
+      detail: t('chatLanding.runtimeManagedAi', { runtime: config.selectedAgent.displayName }),
+      ...(!config.needsCredential && hasWorkspaceTarget && onAdjustAi
+        ? { actionLabel: t('chatLanding.configureWorkspaceAi') }
+        : {}),
     }
-  } else if (config.selectedAgent && (!config.needsCredential || config.selectedRuntimeUsesGlobalConfig)) {
-    summary = (
-      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[10.5px] text-muted-foreground">
-        <span className="inline-flex min-w-0 items-center gap-1.5">
-          <Bot className="h-3 w-3 shrink-0" />
-          <span>{t('chatLanding.runtimeManagedAi', { runtime: config.selectedAgent.displayName })}</span>
-        </span>
-        {!config.needsCredential && hasWorkspaceTarget && (
-          <button
-            type="button"
-            onClick={onAdjustAi}
-            className="oa-pressable inline-flex min-h-7 items-center gap-1 rounded-md px-2 py-1 text-primary hover:bg-primary/10 sm:ml-auto"
-            aria-label={t('chatLanding.configureWorkspaceAi')}
-            title={t('chatLanding.configureWorkspaceAi')}
-          >
-            <Settings2 className="h-3 w-3" />
-            {t('chatLanding.configureWorkspaceAi')}
-          </button>
-        )}
-      </div>
-    )
   }
 
   const setupStatus = config.detectedCredential?.interactiveSetupStatus
@@ -438,11 +821,34 @@ export function AgentLaunchDetails({
       ? t('chatLanding.claudeWorkspaceTrustRequired')
       : null
 
-  if (summary === null && pendingWriteNotice === null && setupNotice === null) return null
+  if (scope === null && setupNotice === null) return null
   return (
     <div className={`flex min-w-0 flex-col gap-1.5 ${className}`}>
-      {summary}
-      {pendingWriteNotice}
+      {scope !== null && (
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-muted-foreground">
+          <span className="inline-flex min-h-6 shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-muted/45 px-2 font-medium text-foreground/80">
+            <Info className="h-3 w-3 shrink-0" />
+            {scope.label}
+          </span>
+          {scope.detail && (
+            <span className="hidden min-w-0 flex-1 truncate sm:block" title={scope.detail}>
+              {scope.detail}
+            </span>
+          )}
+          {scope.actionLabel && onAdjustAi && (
+            <button
+              type="button"
+              onClick={onAdjustAi}
+              className="oa-pressable ml-auto inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md px-2 py-1 text-primary hover:bg-primary/10"
+              aria-label={scope.actionLabel}
+              title={scope.actionLabel}
+            >
+              <Settings2 className="h-3 w-3" />
+              {scope.actionLabel}
+            </button>
+          )}
+        </div>
+      )}
       {setupNotice !== null && (
         <div
           role="status"

@@ -21,6 +21,9 @@ the durable truth after it changes.
 
 ## Active
 
+- [[plans/electron-runtime-browser-handoff.md]] — Lets Electron detect a
+  healthy dev/CLI Runtime already owning the selected data location and hand
+  the user to its verified browser UI without takeover.
 - [[plans/shell-first-cli-supervisor.md]] — Delivers a first-class Shell
   Supervisor TUI, persistent Guardian-owned Runtime lifecycle, standalone
   headless release bundle, atomic update/rollback, and real N-1 plus PTY
@@ -28,6 +31,64 @@ the durable truth after it changes.
 
 ## Completed
 
+- [[plans/workspace-ai-preferences.md]] — Separates Agent runtime diagnostics
+  from scenario-aware AI defaults, with a responsive preferences editor and
+  one-time migration 0037 for legacy Workspace settings.
+- [[plans/workspace-runtime-settings.md]] — Adds portable, secret-free
+  interactive/headless runtime preferences to each Workspace and demotes native
+  project credential injection to an explicit deprecated compatibility export.
+- [[plans/static-markdown-content-stability.md]] — Keeps Inbox and Tracked
+  Markdown DOM stable across unchanged Workspace Manager and Inbox polling so
+  text selection, browser translation, and report interactions survive.
+  Delivered for topic review in Draft PR #1030.
+- [[plans/shadcn-resizable-page-sidebar.md]] — Replaced the hand-written
+  page-sidebar rail with shadcn Resizable and closed its responsive,
+  threshold-motion, resisted-overdrag, repeat-cycle, and rapid-reversal
+  contracts in Draft PR #1025.
+- [[plans/tracked-relationship-graph.md]] — Adds an Obsidian-style global and
+  local relationship graph derived from Tracked entities and authored Workspace
+  backlinks, with provenance-preserving material navigation.
+- [[plans/quick-start-launch-context.md]] — Reframed Quick Start as a compact
+  launch context: Workspace and Agent runtime sit outside the composer, while
+  human-readable AI access, model, and effort choices remain inside it.
+- [[plans/semantic-issue-assignees.md]] — Replaced ambiguous scheduled-Issue
+  assignee tokens with behavior-named canonical values, explicit deprecated
+  aliases, and an idempotent Workspace-file migration. Delivered in serial PR
+  #990.
+- [[plans/issue-runtime-choice.md]] — Made scheduled Issue launch selection a
+  credential-first flow, narrowed model and effort choices to that provider,
+  and froze the result in the new Session runtime binding.
+- [[plans/session-runtime-bindings.md]] — Made credential source, model, and
+  effort a durable product-Session binding projected by every Agent adapter
+  across interactive, Web, and headless launch/resume.
+- [[plans/native-runtime-auth-fallback.md]] — Makes OpenCode and Pi honor their
+  native global login/config by default, keeps OpenAlice-managed credentials as
+  an explicit Workspace override, and makes launch/resume authentication
+  failures visible instead of leaving Sessions stuck opening. Delivered in
+  serial PR #983.
+- [[plans/pi-local-workspace-provider.md]] — Moved OpenAlice-managed Pi
+  provider registration from the user-global model registry into reversible,
+  Workspace-local extension state. Delivered in serial PR #981.
+- [[plans/runtime-ui-style-profiles.md]] — Added independent runtime-selectable
+  component appearance profiles for Default, Windows 98, and Broker Classic
+  while preserving palette choice and shared shadcn/Base UI behavior. Delivered
+  in serial PR #976.
+- [[plans/shadcn-systematic-ui-audit.md]] — Exercised every installed
+  shadcn/Base UI primitive through real product entries, repaired the
+  menu-to-dialog focus handoff, and passed browser, full-suite, build, and
+  packaged Electron acceptance. Delivered in serial PR #974.
+- [[plans/shadcn-base-ui-migration.md]] — Replaced the initial Radix-backed
+  shadcn primitives and custom overlay patches with the official Base UI + Nova
+  source while preserving OpenAlice's product hierarchy and palette. Delivered
+  for integration in serial PR #973.
+- [[plans/mobile-activity-sheet.md]] — Moved the phone ActivityBar onto the
+  shared Sheet behavior while preserving the static desktop rail. Delivered as
+  serial PR #971 after the foundation in PR #970 was accepted and merged.
+- [[plans/shadcn-overlay-foundation.md]] — Established an OpenAlice-owned
+  shadcn/Radix primitive layer, retired representative hand-written overlay
+  behavior, and preserved the current product hierarchy and visual language as
+  the foundation for later runtime-selectable style profiles. Implemented in
+  Draft PR #970.
 - [[plans/desktop-upgrade-release-gate.md]] — Adds a real N-1 desktop-state
   upgrade journey to the native package matrix and validates final updater
   metadata and artifacts before a release can be published.

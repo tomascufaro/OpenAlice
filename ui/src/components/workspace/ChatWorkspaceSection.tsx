@@ -9,11 +9,15 @@
  * this surface is for chatting, not workspace management.
  */
 
-import { useEffect, useMemo, useState, type ReactElement } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  Check,
   ChevronDown,
   ChevronRight,
+  Clock3,
+  LayoutGrid,
+  Layers3,
   MessageSquarePlus,
   Network,
   PanelsTopLeft,
@@ -33,12 +37,17 @@ import {
 } from './api'
 import { CreateWorkspaceDialog } from './CreateWorkspaceDialog'
 import { WorkspaceOffboardingDialog } from './WorkspaceOffboardingDialog'
+import {
+  ConversationBrowserDialog,
+  WorkspacePickerDialog,
+} from './WorkspaceNavigationDialogs'
 import { SessionRow } from './Sidebar'
 import { SidebarActionMenu } from './SidebarActionMenu'
 import { workspaceDisplayName, workspaceDisplayTitle } from './display'
 import { orderSessionsForSidebar, orderWorkspacesForSidebar } from './sidebar-order'
 import { useReorderMotion } from './useReorderMotion'
 import { preferencesApi } from '../../api/preferences'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { ChatDisplayMode } from './chat-display-mode'
 
 const CHAT_TEMPLATE = 'chat'
@@ -101,6 +110,10 @@ export function ChatWorkspaceSection({
   const [pendingDelete, setPendingDelete] = useState<Workspace | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [recentWorkspaceId, setRecentWorkspaceId] = useState<string | null>(null)
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
+  const [conversationBrowserOpen, setConversationBrowserOpen] = useState(false)
+  const [conversationWorkspaceId, setConversationWorkspaceId] = useState<string | null>(null)
+  const dialogRestoreFocusRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (mode !== 'chat') return
@@ -130,6 +143,20 @@ export function ChatWorkspaceSection({
     void preferencesApi.rememberRecentChatWorkspace(workspaceId).catch(() => undefined)
   }
 
+  const openWorkspacePicker = (restoreFocus: HTMLElement | null): void => {
+    dialogRestoreFocusRef.current = restoreFocus
+    setWorkspacePickerOpen(true)
+  }
+
+  const openConversationBrowser = (
+    workspaceId: string | null,
+    restoreFocus: HTMLElement | null,
+  ): void => {
+    dialogRestoreFocusRef.current = restoreFocus
+    setConversationWorkspaceId(workspaceId)
+    setConversationBrowserOpen(true)
+  }
+
   // Don't collapse the whole section while templates are still loading — doing
   // so hid the cold-load skeleton (and the New-chat CTA) during the exact 30s
   // window we want to fill, leaving a blank pane. Only bail once templates are
@@ -137,56 +164,11 @@ export function ChatWorkspaceSection({
   if (ctx.templatesLoaded && !chatTemplate && ctx.templatesError === null) return null
 
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col">
       {/* Starting a conversation is the primary action. Creating a Workspace is
           a lower-frequency context-boundary action attached to the list it
           affects, rather than a competing half-width CTA. */}
       <div className="px-2 pt-2 pb-1">
-        {mode === 'chat' && (
-          <div
-            role="group"
-            aria-label={t('chat.displayModeLabel')}
-            className="mb-2 grid grid-cols-[0.85fr_0.85fr_1.3fr] rounded-lg bg-muted/65 p-0.5"
-          >
-            <button
-              type="button"
-              onClick={() => onRequestDisplayMode('focused')}
-              aria-pressed={displayMode === 'focused'}
-              className={`oa-pressable min-w-0 rounded-md px-1 py-1.5 text-[11px] font-medium transition-colors ${
-                displayMode === 'focused'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <span className="block truncate">{t('chat.currentScope')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => onRequestDisplayMode('recent')}
-              aria-pressed={displayMode === 'recent'}
-              aria-label={t('chat.recentMode')}
-              className={`oa-pressable min-w-0 rounded-md px-1 py-1.5 text-[11px] font-medium transition-colors ${
-                displayMode === 'recent'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <span className="block truncate">{t('chat.recentScope')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => onRequestDisplayMode('multi')}
-              aria-pressed={displayMode === 'multi'}
-              className={`oa-pressable min-w-0 rounded-md px-1 py-1.5 text-[11px] font-medium transition-colors ${
-                displayMode === 'multi'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <span className="block truncate">{t('chat.workspacesScope')}</span>
-            </button>
-          </div>
-        )}
         <button
           type="button"
           onClick={() => navigate({
@@ -216,10 +198,10 @@ export function ChatWorkspaceSection({
         </div>
       )}
 
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {mode === 'chat' && displayMode === 'focused' ? (
         <FocusedChatWorkspace
           workspace={focusedWorkspace}
-          workspaces={chatWorkspaces}
           loading={!ctx.hasLoaded && !showListError}
           unavailable={showListError}
           activeSessionId={selection !== null && selection.wsId === focusedWorkspace?.id
@@ -240,18 +222,8 @@ export function ChatWorkspaceSection({
             onNavigate()
           }}
           onDeleteSession={(workspaceId, sessionId) => ctx.requestDeleteSession(workspaceId, sessionId)}
-          onSwitchWorkspace={(workspaceId) => {
-            rememberChatWorkspace(workspaceId)
-            navigate({ kind: 'chat-landing', params: { targetWsId: workspaceId } })
-          }}
-          onBrowseSessions={(workspaceId) => navigate({
-            kind: 'workspace',
-            params: { wsId: workspaceId, source: 'chat' },
-          })}
-          onConfigure={(workspaceId) => ctx.openAgentConfig(workspaceId)}
-          onOpenManager={() => navigate({ kind: 'workspace-manager', params: {} })}
+          onBrowseSessions={(workspaceId, restoreFocus) => openConversationBrowser(workspaceId, restoreFocus)}
           onCreateWorkspace={() => setShowCreate(true)}
-          onShowAllWorkspaces={() => onRequestDisplayMode('multi')}
         />
       ) : mode === 'chat' && displayMode === 'recent' ? (
         <AllWorkspaceRecentSessions
@@ -277,7 +249,7 @@ export function ChatWorkspaceSection({
           onCreateWorkspace={() => setShowCreate(true)}
         />
       ) : (
-        <>
+        <div className="min-h-0 flex-1 overflow-y-auto">
       {mode === 'chat' && (
         <ManagerWorkspaceRow
           manager={ctx.workspaceManager}
@@ -307,7 +279,7 @@ export function ChatWorkspaceSection({
           {t('nav.item.workspaces')}
         </span>
       </div>
-      <div className="px-2 pb-1">
+      {mode === 'auto-quant' && <div className="px-2 pb-1">
         <button
           type="button"
           onClick={() => setShowCreate(true)}
@@ -318,7 +290,7 @@ export function ChatWorkspaceSection({
           <PanelsTopLeft size={14} strokeWidth={2} className="shrink-0" />
           <span>{mode === 'auto-quant' ? t('autoQuant.newWorkspace') : t('chat.newWorkspace')}</span>
         </button>
-      </div>
+      </div>}
 
       <ul ref={workspaceListRef} className="py-0.5">
         {/* Cold load: the list is empty because it hasn't fetched yet, NOT
@@ -371,13 +343,57 @@ export function ChatWorkspaceSection({
             onConfigure={() => ctx.openAgentConfig(w.id)}
             onDelete={() => setPendingDelete(w)}
             onSpawn={() => navigate({ kind: landingKind, params: { targetWsId: w.id } })}
-            onBrowseSessions={() => {
-              if (mode === 'chat') rememberChatWorkspace(w.id)
-              navigate({ kind: 'workspace', params: { wsId: w.id, source } })
-            }}
+            onBrowseSessions={(restoreFocus) => openConversationBrowser(w.id, restoreFocus)}
           />
         ))}
       </ul>
+        </div>
+      )}
+      </div>
+
+      {mode === 'chat' && (
+        <ChatWorkspaceContextFooter
+          workspace={focusedWorkspace}
+          workspaces={chatWorkspaces}
+          displayMode={displayMode}
+          onRequestDisplayMode={onRequestDisplayMode}
+          onConfigure={() => focusedWorkspace && ctx.openAgentConfig(focusedWorkspace.id)}
+          onUpgrade={() => focusedWorkspace && ctx.openAgentConfig(focusedWorkspace.id, undefined, 'template')}
+          onOpenWorkspacePicker={openWorkspacePicker}
+          onBrowseSessions={(restoreFocus) => openConversationBrowser(focusedWorkspace?.id ?? null, restoreFocus)}
+          onOpenManager={() => navigate({ kind: 'workspace-manager', params: {} })}
+          onCreateWorkspace={() => setShowCreate(true)}
+        />
+      )}
+
+      {mode === 'chat' && (
+        <>
+          <WorkspacePickerDialog
+            open={workspacePickerOpen}
+            workspaces={chatWorkspaces}
+            currentWorkspaceId={focusedWorkspace?.id ?? null}
+            restoreFocusRef={dialogRestoreFocusRef}
+            onOpenChange={setWorkspacePickerOpen}
+            onSelectWorkspace={(workspaceId) => {
+              setWorkspacePickerOpen(false)
+              rememberChatWorkspace(workspaceId)
+              onRequestDisplayMode('focused')
+              navigate({ kind: 'chat-landing', params: { targetWsId: workspaceId } })
+            }}
+          />
+          <ConversationBrowserDialog
+            open={conversationBrowserOpen}
+            workspaces={chatWorkspaces}
+            currentWorkspaceId={conversationWorkspaceId}
+            activeSessionId={selection?.wsId === conversationWorkspaceId ? selection.sessionId : null}
+            restoreFocusRef={dialogRestoreFocusRef}
+            onOpenChange={setConversationBrowserOpen}
+            onSelectSession={(workspaceId, sessionId) => {
+              setConversationBrowserOpen(false)
+              rememberChatWorkspace(workspaceId)
+              navigate({ kind: 'workspace', params: { wsId: workspaceId, sessionId, source: 'chat' } })
+            }}
+          />
         </>
       )}
 
@@ -388,7 +404,10 @@ export function ChatWorkspaceSection({
           initialTag={nextWorkspaceTag(ctx.workspaces, starterTag)}
           onCreated={(workspace) => {
             ctx.refresh()
-            if (mode === 'chat') rememberChatWorkspace(workspace.id)
+            if (mode === 'chat') {
+              rememberChatWorkspace(workspace.id)
+              onRequestDisplayMode('focused')
+            }
             navigate({ kind: landingKind, params: { targetWsId: workspace.id } })
           }}
           onClose={() => setShowCreate(false)}
@@ -405,13 +424,175 @@ export function ChatWorkspaceSection({
           onClose={() => setPendingDelete(null)}
         />
       )}
-    </>
+    </div>
+  )
+}
+
+interface ChatWorkspaceContextFooterProps {
+  workspace: Workspace | null
+  workspaces: readonly Workspace[]
+  displayMode: ChatDisplayMode
+  onRequestDisplayMode: (mode: ChatDisplayMode) => void
+  onConfigure: () => void
+  onUpgrade: () => void
+  onOpenWorkspacePicker: (restoreFocus: HTMLElement | null) => void
+  onBrowseSessions: (restoreFocus: HTMLElement | null) => void
+  onOpenManager: () => void
+  onCreateWorkspace: () => void
+}
+
+function ChatWorkspaceContextFooter(props: ChatWorkspaceContextFooterProps): ReactElement {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+
+  const closeAndRun = (action: () => void) => {
+    setOpen(false)
+    action()
+  }
+  const title = props.displayMode === 'focused'
+    ? (props.workspace ? workspaceDisplayName(props.workspace) : t('chat.currentWorkspace'))
+    : props.displayMode === 'recent'
+      ? t('chat.recentConversations')
+      : t('nav.item.workspaces')
+  const subtitle = props.displayMode === 'focused'
+    ? t('chat.currentWorkspace')
+    : props.displayMode === 'recent'
+      ? t('chat.allWorkspaces')
+      : t('chat.multiModeDescription')
+  const TriggerIcon = props.displayMode === 'recent' ? Clock3 : LayoutGrid
+  const upgrade = props.workspace?.upgradeAvailable ?? null
+
+  const modeOption = (
+    mode: ChatDisplayMode,
+    label: string,
+    icon: ReactElement,
+    disabled = false,
+  ) => (
+    <button
+      type="button"
+      onClick={() => closeAndRun(() => props.onRequestDisplayMode(mode))}
+      disabled={disabled}
+      aria-pressed={props.displayMode === mode}
+      className="flex min-h-9 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-foreground transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-40"
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground" aria-hidden>
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {props.displayMode === mode && <Check size={13} strokeWidth={2.2} className="shrink-0 text-primary" aria-hidden />}
+    </button>
+  )
+
+  return (
+    <div className="shrink-0 border-t border-border/60 bg-secondary p-2">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger
+          render={<button
+            ref={triggerRef}
+            type="button"
+            aria-label={upgrade
+              ? t('chat.workspaceContextUpdateLabel', { name: title, version: upgrade.to })
+              : t('chat.workspaceContextLabel', { name: title })}
+            className="oa-pressable flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+          />}
+        >
+          <TriggerIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-medium text-foreground" title={props.displayMode === 'focused' && props.workspace ? workspaceDisplayTitle(props.workspace) : title}>
+              {title}
+            </span>
+            <span className={`mt-0.5 block truncate text-[10px] ${upgrade ? 'font-medium text-primary' : 'text-muted-foreground/70'}`}>
+              {upgrade ? t('chat.workspaceUpdateAvailable', { version: upgrade.to }) : subtitle}
+            </span>
+          </span>
+          {upgrade && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-hidden />}
+          <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden />
+        </PopoverTrigger>
+
+        <PopoverContent
+          role="dialog"
+          aria-label={t('chat.workspaceContextMenu')}
+          side="top"
+          align="start"
+          sideOffset={4}
+          initialFocus={false}
+          className="z-40 max-h-[min(34rem,calc(100vh-1rem))] w-72 max-w-[calc(100vw-1rem)] gap-0 overflow-y-auto overscroll-contain rounded-lg border border-border/70 bg-popover p-1.5 text-popover-foreground shadow-lg ring-0 [scrollbar-gutter:stable]"
+        >
+          <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">
+            {t('chat.view')}
+          </p>
+          {modeOption('focused', t('chat.currentWorkspace'), <LayoutGrid size={14} strokeWidth={2} />, props.workspace === null)}
+          {modeOption('recent', t('chat.recentMode'), <Clock3 size={14} strokeWidth={2} />)}
+          {modeOption('multi', t('chat.multiMode'), <PanelsTopLeft size={14} strokeWidth={2} />)}
+
+          <div className="my-1 border-t border-border/60" />
+
+          <button
+            type="button"
+            onClick={() => closeAndRun(() => props.onOpenWorkspacePicker(triggerRef.current))}
+            disabled={props.workspaces.length === 0}
+            className="flex min-h-9 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-default disabled:opacity-40"
+          >
+            <LayoutGrid size={14} strokeWidth={2} aria-hidden />
+            <span className="min-w-0 flex-1 truncate">{t('chat.switchWorkspace')}</span>
+            <ChevronRight size={13} strokeWidth={2} className="shrink-0 text-muted-foreground/60" aria-hidden />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => closeAndRun(props.onConfigure)}
+            disabled={!props.workspace}
+            className="flex min-h-9 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-default disabled:opacity-40"
+          >
+            <SettingsIcon size={14} strokeWidth={2} aria-hidden />
+            <span className="min-w-0 flex-1 truncate">{t('workspace.configure')}</span>
+          </button>
+          {upgrade && (
+            <button
+              type="button"
+              onClick={() => closeAndRun(props.onUpgrade)}
+              aria-label={t('chat.reviewWorkspaceUpdateLabel', { version: upgrade.to })}
+              className="flex min-h-9 w-full items-center gap-2.5 rounded-md bg-primary/10 px-2.5 py-2 text-left text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+            >
+              <Layers3 size={14} strokeWidth={2} aria-hidden />
+              <span className="min-w-0 flex-1 truncate">{t('chat.reviewWorkspaceUpdate')}</span>
+              <span className="shrink-0 tabular-nums text-[10px] text-primary/75">v{upgrade.to}</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => closeAndRun(() => props.onBrowseSessions(triggerRef.current))}
+            disabled={props.workspaces.length === 0}
+            className="flex min-h-9 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-default disabled:opacity-40"
+          >
+            <ChevronRight size={14} strokeWidth={2} aria-hidden />
+            <span className="min-w-0 flex-1 truncate">{t('chat.browseWorkspace')}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => closeAndRun(props.onOpenManager)}
+            className="flex min-h-9 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Network size={14} strokeWidth={2} aria-hidden />
+            <span className="min-w-0 flex-1 truncate">{t('workspaceManager.title')}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => closeAndRun(props.onCreateWorkspace)}
+            className="flex min-h-9 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <PanelsTopLeft size={14} strokeWidth={2} aria-hidden />
+            <span className="min-w-0 flex-1 truncate">{t('chat.newWorkspace')}</span>
+          </button>
+        </PopoverContent>
+      </Popover>
+    </div>
   )
 }
 
 interface FocusedChatWorkspaceProps {
   workspace: Workspace | null
-  workspaces: readonly Workspace[]
   loading: boolean
   unavailable: boolean
   activeSessionId: string | null
@@ -419,12 +600,8 @@ interface FocusedChatWorkspaceProps {
   onPauseSession: (workspaceId: string, sessionId: string) => void
   onResumeSession: (workspaceId: string, session: SessionRecord) => void
   onDeleteSession: (workspaceId: string, sessionId: string) => void
-  onSwitchWorkspace: (workspaceId: string) => void
-  onBrowseSessions: (workspaceId: string) => void
-  onConfigure: (workspaceId: string) => void
-  onOpenManager: () => void
+  onBrowseSessions: (workspaceId: string, restoreFocus: HTMLElement | null) => void
   onCreateWorkspace: () => void
-  onShowAllWorkspaces: () => void
 }
 
 interface AllWorkspaceRecentSessionsProps {
@@ -523,7 +700,6 @@ function AllWorkspaceRecentSessions(props: AllWorkspaceRecentSessionsProps): Rea
 
 function FocusedChatWorkspace(props: FocusedChatWorkspaceProps): ReactElement {
   const { t } = useTranslation()
-  const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false)
   const sessions = useMemo(
     () => orderSessionsForSidebar(props.workspace?.sessions ?? []),
     [props.workspace?.sessions],
@@ -596,93 +772,37 @@ function FocusedChatWorkspace(props: FocusedChatWorkspaceProps): ReactElement {
           />
         ))}
         {sessions.length > visibleSessions.length && (
-          <button
-            type="button"
-            onClick={() => props.onBrowseSessions(props.workspace!.id)}
-            className="oa-pressable mx-2 my-1 flex min-h-8 items-center rounded-md px-2 text-[11px] font-medium text-primary hover:bg-primary/10"
-          >
-            {t('chat.viewAllSessions', { count: sessions.length })}
-          </button>
+          <ConversationListFooter
+            count={sessions.length}
+            onOpen={(restoreFocus) => props.onBrowseSessions(props.workspace!.id, restoreFocus)}
+          />
         )}
       </div>
 
-      <div className="border-t border-border/60 p-2">
-        <button
-          type="button"
-          onClick={() => setShowWorkspaceMenu((visible) => !visible)}
-          aria-expanded={showWorkspaceMenu}
-          aria-label={t('chat.currentWorkspaceLabel', {
-            workspace: workspaceDisplayTitle(props.workspace),
-          })}
-          className="oa-pressable flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <PanelsTopLeft className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[10px] text-muted-foreground/70">{t('chat.currentWorkspace')}</span>
-            <span className="block truncate font-medium text-foreground" title={workspaceDisplayTitle(props.workspace)}>
-              {workspaceDisplayName(props.workspace)}
-            </span>
-          </span>
-          <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${showWorkspaceMenu ? 'rotate-180' : ''}`} aria-hidden />
-        </button>
+    </div>
+  )
+}
 
-        {showWorkspaceMenu && (
-          <div className="oa-disclosure-enter mt-1 space-y-1 rounded-lg border border-border/70 bg-secondary/65 p-2">
-            {props.workspaces.length > 1 && (
-              <label className="block px-1 pb-1 text-[10px] font-medium text-muted-foreground">
-                <span className="mb-1 block">{t('chat.switchWorkspace')}</span>
-                <select
-                  value={props.workspace.id}
-                  onChange={(event) => props.onSwitchWorkspace(event.target.value)}
-                  className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
-                >
-                  {props.workspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>
-                      {workspaceDisplayTitle(workspace)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <button
-              type="button"
-              onClick={() => props.onConfigure(props.workspace!.id)}
-              className="w-full rounded px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              {t('workspace.configure')}
-            </button>
-            <button
-              type="button"
-              onClick={() => props.onBrowseSessions(props.workspace!.id)}
-              className="w-full rounded px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              {t('chat.browseWorkspace')}
-            </button>
-            <button
-              type="button"
-              onClick={props.onOpenManager}
-              className="w-full rounded px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              {t('workspaceManager.title')}
-            </button>
-            <div className="my-1 border-t border-border/60" />
-            <button
-              type="button"
-              onClick={props.onShowAllWorkspaces}
-              className="w-full rounded px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              {t('chat.showAllWorkspaces')}
-            </button>
-            <button
-              type="button"
-              onClick={props.onCreateWorkspace}
-              className="w-full rounded px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              {t('chat.newWorkspace')}
-            </button>
-          </div>
-        )}
-      </div>
+function ConversationListFooter({
+  count,
+  onOpen,
+}: {
+  count: number
+  onOpen: (restoreFocus: HTMLElement | null) => void
+}): ReactElement {
+  const { t } = useTranslation()
+
+  return (
+    <div className="mx-2 mt-1 border-t border-border/55 pt-1">
+      <button
+        type="button"
+        aria-label={t('chat.viewAllSessions', { count })}
+        onClick={(event) => onOpen(event.currentTarget)}
+        className="flex min-h-9 w-full items-center gap-2 rounded-md px-2 text-left text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/35"
+      >
+        <span className="min-w-0 flex-1 truncate">{t('chat.browseWorkspace')}</span>
+        <ChevronRight size={13} strokeWidth={2} className="shrink-0 text-muted-foreground/60" aria-hidden />
+      </button>
     </div>
   )
 }
@@ -793,8 +913,8 @@ interface ChatWorkspaceRowProps {
   onDelete: () => void
   /** Spawn a fresh agent session in THIS workspace (and open it). */
   onSpawn: () => void
-  /** Open the scalable Workspace-level Session directory. */
-  onBrowseSessions: () => void
+  /** Open the scalable conversation browser scoped to this Workspace. */
+  onBrowseSessions: (restoreFocus: HTMLElement | null) => void
 }
 
 function ChatWorkspaceRow(props: ChatWorkspaceRowProps): ReactElement {
@@ -923,13 +1043,10 @@ function ChatWorkspaceRow(props: ChatWorkspaceRowProps): ReactElement {
             />
           ))}
           {orderedSessions.length > visibleSessions.length && (
-            <button
-              type="button"
-              onClick={props.onBrowseSessions}
-              className="oa-pressable ml-2 my-1 flex min-h-7 items-center rounded-md px-2 text-[10.5px] font-medium text-primary hover:bg-primary/10"
-            >
-              {t('chat.viewAllSessions', { count: orderedSessions.length })}
-            </button>
+            <ConversationListFooter
+              count={orderedSessions.length}
+              onOpen={props.onBrowseSessions}
+            />
           )}
         </div>
       )}
