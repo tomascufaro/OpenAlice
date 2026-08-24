@@ -15,6 +15,13 @@ export interface CollectorOpts {
   intervalMs: number
 }
 
+export interface FeedRefreshResult {
+  source: string
+  fetched?: number
+  ingested?: number
+  error?: string
+}
+
 export class NewsCollector {
   private timer: ReturnType<typeof setInterval> | null = null
   private store: NewsCollectorStore
@@ -67,6 +74,19 @@ export class NewsCollector {
     } finally {
       this.fetchInFlight = null
     }
+  }
+
+  /** Fetch selected feeds even when they are disabled from periodic collection. */
+  async fetchSources(sources: readonly string[]): Promise<FeedRefreshResult[]> {
+    const selected = this.feeds.filter((feed) => sources.includes(feed.source))
+    return Promise.all(selected.map(async (feed) => {
+      try {
+        const { fetched, ingested } = await this.fetchFeed(feed)
+        return { source: feed.source, fetched, ingested }
+      } catch (error) {
+        return { source: feed.source, error: error instanceof Error ? error.message : String(error) }
+      }
+    }))
   }
 
   private async _fetchAllImpl(): Promise<{ total: number; new: number }> {

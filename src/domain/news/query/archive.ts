@@ -18,14 +18,8 @@ const REDDIT_SIGNAL_LIMIT = 40
 
 const REDDIT_SIGNAL_SOURCES: Record<string, string> = {
   'reddit-tradewithcongress': 'tradewithcongress',
-  'reddit-congressstocktrading': 'CongressStockTrading',
   'reddit-securityanalysis': 'SecurityAnalysis',
   'reddit-valueinvesting': 'ValueInvesting',
-  'reddit-stocks': 'stocks',
-  'reddit-investing': 'investing',
-  'reddit-options': 'options',
-  'reddit-thetagang': 'thetagang',
-  'reddit-algotrading': 'algotrading',
 }
 
 const TICKER_STOPWORDS = new Set([
@@ -81,6 +75,12 @@ export interface RedditSignalResult {
   source: 'public_reddit'
   verificationRequired: true
 }
+
+const ON_DEMAND_REDDIT_SOURCES = [
+  'reddit-tradewithcongress',
+  'reddit-securityanalysis',
+  'reddit-valueinvesting',
+] as const
 
 function truncateMetadata(metadata: Record<string, string | null>, maxLength: number = 40): string {
   const str = JSON.stringify(metadata)
@@ -299,8 +299,18 @@ function reasonForRedditSignal(subreddit: string, tickers: string[]): string {
 
 // ==================== AI Tool factory ====================
 
-export function createNewsArchiveTools(provider: INewsProvider) {
+export function createNewsArchiveTools(
+  provider: INewsProvider,
+  refreshRedditFeeds?: () => Promise<Array<{ source: string; fetched?: number; ingested?: number; error?: string }>>,
+) {
   return {
+    refreshRedditSignals: tool({
+      description: 'Refresh the selected Reddit RSS feeds on demand (r/tradewithcongress, r/SecurityAnalysis, r/ValueInvesting). Returns a result for each source; an error means that source was unavailable and must not be reported as an empty result.',
+      inputSchema: z.object({}),
+      execute: async () => refreshRedditFeeds
+        ? { sources: await refreshRedditFeeds() }
+        : { sources: ON_DEMAND_REDDIT_SOURCES.map((source) => ({ source, error: 'News collector is unavailable.' })) },
+    }),
     globRss: tool({
       description: `Search the collected-RSS archive by title pattern (like "ls" / "glob").
 
@@ -423,9 +433,8 @@ to find the item (no need to repeat it).`,
     redditSignals: tool({
       description: `Find public Reddit trading-signal posts from collected Reddit RSS feeds.
 
-This reads only Reddit feeds enabled in News Sources. Defaults include r/tradewithcongress,
-r/CongressStockTrading, r/SecurityAnalysis, r/ValueInvesting, r/stocks, r/investing,
-r/options, r/thetagang, and r/algotrading, but they are opt-in feeds because Reddit is noisy.
+This reads the selected Reddit discovery feeds: r/tradewithcongress,
+r/SecurityAnalysis, and r/ValueInvesting. Each is a lead only and requires verification.
 
 Returns public leads only: every result is marked verificationRequired=true. Use filings,
 broker data, and ordinary news tools before treating any post as trade-relevant.`,

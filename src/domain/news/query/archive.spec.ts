@@ -359,5 +359,14 @@ describe('news tools (pure functions)', () => {
       expect(results).toHaveLength(1)
       expect(results[0].id).toBe(102)
     })
+
+    it('filters a selected discovery room', async () => {
+      const results = await redditSignals(createContext(redditNews), {
+        subreddits: ['r/SecurityAnalysis'],
+      })
+
+      expect(results).toHaveLength(1)
+      expect(results[0]).toMatchObject({ subreddit: 'SecurityAnalysis' })
+    })
   })
 })

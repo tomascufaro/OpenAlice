@@ -275,7 +275,14 @@ async function main() {
     toolCenter.register(createEtfTools(etfClient), 'etf')
   }
   if (config.news.enabled) {
-    toolCenter.register(createNewsArchiveTools(newsStore), 'rss')
+    toolCenter.register(createNewsArchiveTools(newsStore, async () => {
+      if (!newsCollector) return []
+      return newsCollector.fetchSources([
+        'reddit-tradewithcongress',
+        'reddit-securityanalysis',
+        'reddit-valueinvesting',
+      ])
+    }), 'rss')
   }
   // v1 calculateIndicator (createAnalysisTools) is retired from the tool surface
   // — calculateQuant (v2, barId-keyed) supersedes it and the two descriptions
