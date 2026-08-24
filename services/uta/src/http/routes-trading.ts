@@ -35,6 +35,7 @@ const placeOrderSchema = z.object({
   outsideRth: z.boolean().optional(),
   parentId: z.string().optional(),
   ocaGroup: z.string().optional(),
+  ocaType: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
   takeProfit: z.object({ price: numericString }).optional(),
   stopLoss: z.object({ price: numericString, limitPrice: numericString.optional() }).optional(),
   subAccountId: z.string().optional(),

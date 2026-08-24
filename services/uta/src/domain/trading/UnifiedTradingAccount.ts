@@ -607,6 +607,12 @@ export class UnifiedTradingAccount {
     const has = (v: unknown): boolean => v != null && String(v) !== ''
     const qty = has(p.totalQuantity)
     const cash = has(p.cashQty)
+    if (p.ocaType != null && p.ocaType !== 1 && p.ocaType !== 2 && p.ocaType !== 3) {
+      fail('ocaType must be 1, 2, or 3.')
+    }
+    if (p.ocaType != null && !has(p.ocaGroup)) {
+      fail('ocaType requires ocaGroup.')
+    }
     if (qty && cash) fail('totalQuantity and cashQty are mutually exclusive — provide exactly one.')
     if (p.orderType === 'MKT') {
       if (!qty && !cash) fail('requires totalQuantity (shares) or cashQty (notional).')
@@ -715,6 +721,7 @@ export class UnifiedTradingAccount {
     if (params.outsideRth) order.outsideRth = true
     if (params.parentId != null) order.parentId = parseInt(params.parentId, 10) || 0
     if (params.ocaGroup != null) order.ocaGroup = params.ocaGroup
+    if (params.ocaType != null) order.ocaType = params.ocaType
 
     const tpsl: TpSlParams | undefined =
       (params.takeProfit || params.stopLoss)

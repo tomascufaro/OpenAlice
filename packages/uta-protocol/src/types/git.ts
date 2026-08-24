@@ -265,6 +265,7 @@ export interface StagePlaceOrderParams {
   outsideRth?: boolean
   parentId?: string
   ocaGroup?: string
+  ocaType?: 1 | 2 | 3
   takeProfit?: { price: string }
   stopLoss?: { price: string; limitPrice?: string }
 }

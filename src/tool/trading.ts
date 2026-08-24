@@ -660,6 +660,7 @@ Optional: attach takeProfit and/or stopLoss for automatic exit orders.`,
         outsideRth: z.boolean().optional().describe('Allow execution outside regular trading hours'),
         parentId: z.string().optional().describe('Parent order ID (bracket orders)'),
         ocaGroup: z.string().optional().describe('One-Cancels-All group name'),
+        ocaType: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional().describe('IBKR OCA handling: 1 cancel remaining with block, 2 reduce with block, 3 reduce without block'),
         takeProfit: z.object({
           price: z.string().describe('Take profit price'),
         }).optional().describe('Take profit order (single-level, full quantity)'),

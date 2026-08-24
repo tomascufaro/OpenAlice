@@ -657,6 +657,13 @@ describe('UTA — stagePlaceOrder', () => {
     expect(order.outsideRth).toBe(true)
   })
 
+  it('sets OCA group and type', () => {
+    uta.stagePlaceOrder({ aliceId: 'mock-paper|AAPL', action: 'SELL', orderType: 'LMT', totalQuantity: '10', lmtPrice: '150', tif: 'GTC', ocaGroup: 'rblx-exit', ocaType: 1 })
+    const { order } = getStagedPlaceOrder(uta)
+    expect(order.ocaGroup).toBe('rblx-exit')
+    expect(order.ocaType).toBe(1)
+  })
+
   it('sets aliceId and symbol on contract', () => {
     uta.stagePlaceOrder({ aliceId: 'mock-paper|AAPL', symbol: 'AAPL', action: 'BUY', orderType: 'MKT', totalQuantity: '10' })
     const { contract } = getStagedPlaceOrder(uta)
