@@ -10,7 +10,6 @@ import {
 import {
   detectWorkspaceCredential,
   getAgentReadiness,
-  getAgentRuntimeReadiness,
   listAgentCredentials,
   type AgentCredentialReadiness,
   type AgentInfo,
@@ -20,6 +19,7 @@ import {
   type Workspace,
   type WorkspaceCredentialDetection,
 } from '../components/workspace/api'
+import { useAgentRuntimes } from './useAgentRuntimes'
 import { requiresWorkspaceCredential, resolveAgentRuntime } from '../lib/agentRuntime'
 import {
   runtimeEffortOptions,
@@ -307,10 +307,10 @@ export function useAgentLaunchPreferences(): AgentLaunchPreferencesState {
 
 function workspaceInteractiveLaunch(workspace: Workspace | null): QuickChatLaunchPreference | null {
   if (!workspace) return null
-  const scenario = workspace.runtimeSettings?.runtime.askAlice
-  const agent = scenario?.defaultAgent ?? scenario?.recent.agent ?? workspace.defaultAgent
+  const mode = workspace.runtimeSettings?.runtime.interactive
+  const agent = mode?.defaultAgent ?? mode?.recent.agent ?? workspace.defaultAgent
   if (!agent) return null
-  const preference = scenario?.agents[agent] ?? scenario?.recent.agents[agent]
+  const preference = mode?.agents[agent] ?? mode?.recent.agents[agent]
   if (!preference || preference.accessMode === 'native') {
     return {
       agent,
@@ -355,8 +355,8 @@ export function useWorkspaceAgentLaunchPreferences(
     if (!workspace?.runtimeSettings) return workspace ? {} : installation.lastCredentialByAgent
     return Object.fromEntries(
       Object.entries({
-        ...workspace.runtimeSettings.runtime.askAlice.recent.agents,
-        ...workspace.runtimeSettings.runtime.askAlice.agents,
+        ...workspace.runtimeSettings.runtime.interactive.recent.agents,
+        ...workspace.runtimeSettings.runtime.interactive.agents,
       })
         .filter((entry): entry is [string, { accessMode: 'vault'; credentialSlug: string }] => (
           entry[1].accessMode === 'vault' && typeof entry[1].credentialSlug === 'string'
@@ -389,6 +389,8 @@ export interface UseAgentLaunchConfigOptions {
   /** Managed product Workspace: native project config is deprecated and must
    * not participate in the normal launch picker. */
   readonly managedWorkspaceLaunch?: boolean
+  /** Shared discovery snapshot. Omit to consume `useAgentRuntimes`. */
+  readonly runtimeReadiness?: AgentRuntimeReadinessSnapshot | null
 }
 
 export interface AgentLaunchConfigState {
@@ -433,8 +435,8 @@ export interface AgentLaunchConfigState {
 }
 
 /** Canonical launch-state hook for Quick Chat, Workspace Manager, and future
- * chat-style surfaces. It owns runtime selection/readiness plus the complete
- * credential -> model -> context resolution chain. */
+ * chat-style surfaces. It owns credential -> model -> context resolution.
+ * Host discovery/readiness is owned by `useAgentRuntimes`. */
 export function useAgentLaunchConfig({
   agents,
   defaultAgent,
@@ -442,8 +444,12 @@ export function useAgentLaunchConfig({
   workspaceId,
   hasWorkspace,
   managedWorkspaceLaunch = false,
+  runtimeReadiness: runtimeReadinessInput,
 }: UseAgentLaunchConfigOptions): AgentLaunchConfigState {
-  const [runtimeReadiness, setRuntimeReadiness] = useState<AgentRuntimeReadinessSnapshot | null>(null)
+  const discovered = useAgentRuntimes()
+  const runtimeReadiness = runtimeReadinessInput !== undefined
+    ? runtimeReadinessInput
+    : discovered.readiness
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [credentialList, setCredentialList] = useState<{
     agent: string
@@ -495,14 +501,6 @@ export function useAgentLaunchConfig({
   const agentReadiness = !managedWorkspaceLaunch && workspaceConfigResolved
     ? workspaceConfigDetection?.agentReadiness ?? null
     : null
-
-  useEffect(() => {
-    let live = true
-    void getAgentRuntimeReadiness()
-      .then((snapshot) => { if (live) setRuntimeReadiness(snapshot) })
-      .catch(() => { if (live) setRuntimeReadiness(null) })
-    return () => { live = false }
-  }, [])
 
   useEffect(() => {
     let live = true
@@ -677,18 +675,21 @@ export function useAgentLaunchConfig({
     : baseAiDetails?.model ?? null
   const modelOptions = runtimeModelOptions({
     agent: effectiveAgent,
-    credential: launchCredentialSlug ? credential : null,
+    // Catalog ownership follows the resolved access source, not whether the
+    // user explicitly picked the credential in this launch row. Installation
+    // defaults and detected Workspace credentials are Vault-backed too.
+    credential: accessMode === 'native' ? null : credential,
     defaultModel,
     presets,
   })
   const effectiveModel = launchModel ?? defaultModel
   const selectedModelSemantics = runtimeModelSemantics(effectiveModel, modelOptions)
   const launchReasoningEffort = selectedReasoningEffort
-    ?? (launchModel ? selectedModelSemantics?.reasoning?.defaultEffort : undefined)
   const effortOptions = runtimeEffortOptions({
     agent: effectiveAgent,
     semantics: selectedModelSemantics,
     modelKnown: selectedModelSemantics !== null,
+    model: effectiveModel,
   })
   const aiDetails = launchModel || launchReasoningEffort
     ? {
@@ -697,13 +698,7 @@ export function useAgentLaunchConfig({
         ...(selectedModelSemantics?.reasoning?.mode ?? baseAiDetails?.reasoningMode
           ? { reasoningMode: selectedModelSemantics?.reasoning?.mode ?? baseAiDetails?.reasoningMode }
           : {}),
-        ...(launchReasoningEffort
-          ? { reasoningEffort: launchReasoningEffort }
-          : selectedModelSemantics?.reasoning?.defaultEffort
-            ? { reasoningEffort: selectedModelSemantics.reasoning.defaultEffort }
-            : baseAiDetails?.reasoningEffort
-              ? { reasoningEffort: baseAiDetails.reasoningEffort }
-              : {}),
+        ...(launchReasoningEffort ? { reasoningEffort: launchReasoningEffort } : {}),
         source: 'new-injection' as const,
       }
     : baseAiDetails

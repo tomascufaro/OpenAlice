@@ -1,12 +1,23 @@
 import { useState } from 'react';
 import { formatRelativeTime } from '../../lib/intl';
 import type { ReactElement } from 'react';
-import { Bot, ChevronDown, SquareTerminal } from 'lucide-react';
+import { Bot, ChevronDown, Settings2, SquareTerminal } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
-import type { SessionRecord } from './api';
+import { SessionSettingsDialog } from './SessionSettingsDialog';
+import { sessionCoworkerLabel } from './display';
+import type {
+  AgentInfo,
+  PausedSessionRuntimeUpdate,
+  SessionRecord,
+} from './api';
 
 export interface ResumeCtaProps {
   readonly record: SessionRecord;
+  readonly agents?: readonly AgentInfo[];
+  readonly workspaceId?: string;
+  readonly onUpdateRuntime?: (update: PausedSessionRuntimeUpdate) => Promise<void>;
+  readonly onSaveDisplayName?: (displayName: string | null) => Promise<void>;
   readonly onResume: () => Promise<void>;
   readonly onOpenWebPi?: () => Promise<void>;
 }
@@ -31,11 +42,14 @@ export interface ResumeCtaProps {
  *      `resume --last`; shell fresh + scrollback restore).
  */
 export function ResumeCta(props: ResumeCtaProps): ReactElement {
+  const { t } = useTranslation();
   const [resuming, setResuming] = useState<'terminal' | 'webpi' | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const r = props.record;
-  const sessionTitle = r.title?.trim() || r.name;
+  const sessionTitle = sessionCoworkerLabel(r);
   const runtimeFacts = sessionRuntimeFacts(r);
+  const canOpenSettings = Boolean(props.workspaceId && props.onSaveDisplayName);
 
   const run = async (surface: 'terminal' | 'webpi'): Promise<void> => {
     if (resuming) return;
@@ -77,6 +91,18 @@ export function ResumeCta(props: ResumeCtaProps): ReactElement {
             </dl>
 
             <div className="resume-cta-actions">
+              {canOpenSettings && (
+                <button
+                  type="button"
+                  className="resume-cta-btn is-config oa-pressable"
+                  onClick={() => setSettingsOpen(true)}
+                  disabled={resuming !== null}
+                  aria-label={t('workspace.sessionSettings.openFor', { title: sessionTitle })}
+                >
+                  <Settings2 size={14} strokeWidth={2.1} aria-hidden="true" />
+                  <span>{t('workspace.sessionSettings.action')}</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="resume-cta-btn oa-pressable"
@@ -137,6 +163,19 @@ export function ResumeCta(props: ResumeCtaProps): ReactElement {
           </details>
         </section>
       </div>
+      {canOpenSettings && props.workspaceId && props.onSaveDisplayName && (
+        <SessionSettingsDialog
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          record={r}
+          agents={props.agents ?? []}
+          workspaceId={props.workspaceId}
+          onSaveDisplayName={props.onSaveDisplayName}
+          {...(props.onUpdateRuntime && r.agent !== 'shell'
+            ? { onSaveRuntime: props.onUpdateRuntime }
+            : {})}
+        />
+      )}
     </div>
   );
 }
@@ -224,20 +263,25 @@ function agentDisplayName(agent: string): string {
   return agent;
 }
 
-function sessionRuntimeFacts(record: SessionRecord): readonly { label: string; value: string }[] {
+function sessionRuntimeFacts(
+  record: SessionRecord,
+): readonly { label: string; value: string }[] {
   const runtime = record.runtime;
   return [
     { label: 'Credential', value: credentialDisplay(runtime) },
-    { label: 'Model', value: runtime?.model?.trim() || 'Runtime default' },
+    { label: 'Model', value: runtime ? runtime.model?.trim() || 'Runtime default' : 'Unknown' },
     {
       label: 'Effort',
-      value: runtime?.reasoningEffort ? `${runtime.reasoningEffort} reasoning` : 'Runtime default',
+      value: runtime
+        ? runtime.reasoningEffort ? `${runtime.reasoningEffort} reasoning` : 'Not specified'
+        : 'Unknown',
     },
   ];
 }
 
 function credentialDisplay(runtime: SessionRecord['runtime']): string {
-  if (!runtime || runtime.credentialSource === 'native') return 'Runtime login';
+  if (!runtime) return 'Unknown';
+  if (runtime.credentialSource === 'native') return 'Runtime login';
   if (runtime.credentialSource === 'workspace') return 'Workspace config';
   return runtime.credentialSlug?.trim() || 'Saved credential';
 }

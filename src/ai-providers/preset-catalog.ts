@@ -103,6 +103,8 @@ export interface PresetDef {
    * (free-form).
    */
   regions?: RegionOption[]
+  /** Runtime that consumes this provider credential directly without an API wire. */
+  directAgentId?: string
   /** User-facing guidance for the API-key credential form. */
   setup?: CredentialSetupGuide
   writeOnlyFields?: string[]
@@ -138,18 +140,19 @@ export const CLAUDE_API: PresetDef = {
   description: 'Pay per token via Anthropic API',
   category: 'official',
   defaultName: 'Claude (API Key)',
-  hint: 'Model is switchable here or from the profile list anytime. Opus is the recommended complex-agent default; Sonnet balances capability and cost, while Fable is the highest-capability premium tier.',
+  hint: 'Model is switchable here or from the profile list anytime. Opus 5 is the recommended complex-agent default; Sonnet balances capability and cost, while Fable is the highest-capability premium tier.',
   zodSchema: z.object({
     backend: z.literal('agent-sdk'),
     loginMethod: z.literal('api-key'),
-    model: z.string().default('claude-opus-4-8').describe('Model'),
+    model: z.string().default('claude-opus-5').describe('Model'),
     apiKey: z.string().min(1).describe('Anthropic API key'),
   }),
   models: withModelSemantics('anthropic', [
     { id: 'claude-fable-5', label: 'Claude Fable 5 (Highest capability)' },
-    { id: 'claude-opus-4-8', label: 'Claude Opus 4.8 (Complex agents)' },
+    { id: 'claude-opus-5', label: 'Claude Opus 5 (Complex agents)' },
     { id: 'claude-sonnet-5', label: 'Claude Sonnet 5 (Balanced)' },
     { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (Fastest)' },
+    { id: 'claude-opus-4-8', label: 'Claude Opus 4.8 (Previous generation)' },
     { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Previous generation)' },
   ]),
   regions: [{ id: 'official', label: 'Official (api.anthropic.com)', wires: { anthropic: '' } }],
@@ -157,7 +160,7 @@ export const CLAUDE_API: PresetDef = {
     apiKeyLabel: 'Anthropic API key',
     apiKeyPlaceholder: 'sk-ant-...',
     apiKeyHelp: 'Use a key from Anthropic Console. Claude Pro/Max is a separate Claude Code login and does not belong in this field.',
-    modelHelp: 'Choose an Anthropic API model ID, or paste another exact ID. Opus 4.8 stays the complex-agent default; Fable 5 is the premium capability tier and Sonnet 5 is the balanced tier.',
+    modelHelp: 'Choose an Anthropic API model ID, or paste another exact ID. Opus 5 is the complex-agent default; Fable 5 is the premium capability tier and Sonnet 5 is the balanced tier.',
   },
   writeOnlyFields: ['apiKey'],
 }
@@ -226,6 +229,93 @@ export const CODEX_API: PresetDef = {
   writeOnlyFields: ['apiKey'],
 }
 
+// ==================== Official: xAI Grok ====================
+
+export const XAI_API: PresetDef = {
+  id: 'xai-api',
+  label: 'xAI (API Key)',
+  description: 'Pay per token via the xAI API',
+  category: 'official',
+  defaultName: 'xAI',
+  hint: 'A Grok subscription is a separate `grok login` and does not belong in this field. Grok Build, Oh My Pi, opencode, and Pi can use this key.',
+  zodSchema: z.object({
+    backend: z.literal('vercel-ai-sdk'),
+    provider: z.literal('openai-compatible'),
+    model: z.string().default('grok-4.6').describe('Model'),
+    apiKey: z.string().min(1).describe('xAI API key'),
+  }),
+  models: withModelSemantics('xai', [
+    { id: 'grok-4.6', label: 'Grok 4.6 (Flagship)' },
+    { id: 'grok-4.5', label: 'Grok 4.5 (Previous generation)' },
+  ]),
+  regions: [{
+    id: 'official',
+    label: 'xAI (api.x.ai)',
+    wires: { 'openai-chat': 'https://api.x.ai/v1', 'openai-responses': 'https://api.x.ai/v1' },
+  }],
+  setup: {
+    apiKeyLabel: 'xAI API key',
+    apiKeyPlaceholder: 'xai-...',
+    apiKeyHelp: 'Use a key from console.x.ai. Grok.com subscription login stays in the Grok Build CLI.',
+    modelHelp: 'Choose a Grok API model ID, or paste another exact ID enabled for this key. Grok 4.6 is the current flagship.',
+  },
+  writeOnlyFields: ['apiKey'],
+}
+
+// ==================== Third-party: OpenRouter ====================
+
+export const OPENROUTER: PresetDef = {
+  id: 'openrouter',
+  label: 'OpenRouter',
+  description: 'One key for many models via OpenRouter',
+  category: 'third-party',
+  defaultName: 'OpenRouter',
+  hint: 'OpenRouter is a gateway, not a first-party model vendor. One key can reach Anthropic, OpenAI, Google, and other models. Use `provider/model` IDs from openrouter.ai. Claude Code uses the Anthropic-compatible path (`https://openrouter.ai/api`, no `/v1`); Codex uses Responses; Pi, opencode, Oh My Pi, and Grok Build use the OpenAI-compatible path.',
+  zodSchema: z.object({
+    backend: z.literal('vercel-ai-sdk'),
+    provider: z.literal('openai-compatible'),
+    baseUrl: z.string().default('https://openrouter.ai/api/v1').describe('API endpoint'),
+    model: z.string().default('openai/gpt-5.6-luna').describe('Model'),
+    apiKey: z.string().min(1).describe('OpenRouter API key'),
+  }),
+  regions: [{
+    id: 'default',
+    label: 'OpenRouter (openrouter.ai)',
+    wires: {
+      // OpenAI SDK appends `/chat/completions` and `/responses`.
+      'openai-chat': 'https://openrouter.ai/api/v1',
+      'openai-responses': 'https://openrouter.ai/api/v1',
+      // Anthropic SDK appends `/v1/messages`. OpenRouter's Anthropic skin is
+      // `/api` — a `/v1` suffix here causes model-not-found errors.
+      anthropic: 'https://openrouter.ai/api',
+    },
+  }],
+  models: withModelSemantics('openrouter', [
+    { id: 'openai/gpt-5.6-luna', label: 'GPT 5.6 Luna (Suggested default)' },
+    { id: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
+    { id: 'deepseek/deepseek-v4-flash-0731', label: 'DeepSeek V4 Flash 0731 (Top weekly)' },
+    { id: 'tencent/hy3', label: 'Tencent Hy3 (Top weekly)' },
+    { id: 'z-ai/glm-5.2', label: 'GLM 5.2 (Top weekly)' },
+    { id: 'xiaomi/mimo-v2.5', label: 'Xiaomi MiMo-V2.5 (Top weekly)' },
+    { id: 'anthropic/claude-opus-5', label: 'Claude Opus 5 (Complex agents)' },
+    { id: 'anthropic/claude-fable-5', label: 'Claude Fable 5 (Highest capability)' },
+    { id: 'openai/gpt-5.6-sol', label: 'GPT 5.6 Sol (Power)' },
+    { id: 'openai/gpt-5.6-terra', label: 'GPT 5.6 Terra (Balanced)' },
+    { id: 'x-ai/grok-4.6', label: 'Grok 4.6 (Flagship)' },
+    { id: 'google/gemini-3.7-flash', label: 'Gemini 3.7 Flash (Fast / current)' },
+    { id: 'minimax/minimax-m3', label: 'MiniMax M3' },
+    { id: 'moonshotai/kimi-k3', label: 'Kimi K3' },
+    { id: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+  ]),
+  setup: {
+    apiKeyLabel: 'OpenRouter API key',
+    apiKeyPlaceholder: 'sk-or-...',
+    apiKeyHelp: 'Use a key from openrouter.ai. This is not a first-party Anthropic, OpenAI, or Google key.',
+    modelHelp: 'Use the exact OpenRouter model ID (`provider/model`), or paste another ID from the OpenRouter catalog. GPT 5.6 Luna is the suggested default. The next suggestions mix current Anthropic tiers with this week\'s highest-volume text models.',
+  },
+  writeOnlyFields: ['apiKey'],
+}
+
 // ==================== Third-party: Gemini ====================
 
 export const GEMINI: PresetDef = {
@@ -238,13 +328,15 @@ export const GEMINI: PresetDef = {
   zodSchema: z.object({
     backend: z.literal('vercel-ai-sdk'),
     provider: z.literal('google'),
-    model: z.string().default('gemini-3.1-flash-lite').describe('Model'),
+    model: z.string().default('gemini-3.6-flash').describe('Model'),
     apiKey: z.string().min(1).describe('Google AI API key'),
   }),
   models: withModelSemantics('google', [
-    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash (Stable)' },
-    { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (Preview, paid)' },
-    { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite (Stable)' },
+    { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash (Agentic default)' },
+    { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite (Fastest / economical)' },
+    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash (Previous generation)' },
+    { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (Previous preview, paid)' },
+    { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite (Previous generation)' },
     { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Previous generation)' },
     { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Previous generation)' },
     { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite (Previous generation)' },
@@ -257,7 +349,7 @@ export const GEMINI: PresetDef = {
     apiKeyLabel: 'Google AI API key',
     apiKeyPlaceholder: 'AQ... or AIza...',
     apiKeyHelp: 'Use a Gemini API key from Google AI Studio. Current AQ authorization keys and legacy AIza keys are both supported.',
-    modelHelp: 'Choose a general-purpose Gemini model available to this project, or paste another exact model ID. Flash-Lite stays the conservative default; Gemini 3.5 Flash is the current stable agentic/coding tier and Gemini 3.1 Pro Preview requires paid access.',
+    modelHelp: 'Choose a general-purpose Gemini model available to this project, or paste another exact model ID. Gemini 3.6 Flash is the current balanced agentic default; Gemini 3.5 Flash-Lite favors throughput and cost.',
   },
   writeOnlyFields: ['apiKey'],
 }
@@ -452,6 +544,37 @@ export const LONGCAT: PresetDef = {
   writeOnlyFields: ['apiKey'],
 }
 
+// ==================== Runtime-direct: Cursor ====================
+
+export const CURSOR_DASHBOARD: PresetDef = {
+  id: 'cursor-dashboard',
+  label: 'Cursor Dashboard',
+  description: 'Cursor Agent using a Cursor Dashboard API key',
+  category: 'official',
+  defaultName: 'Cursor Dashboard',
+  directAgentId: 'cursor',
+  hint: 'This credential is consumed directly by Cursor Agent. It is not an OpenAI-compatible endpoint and is never offered to other runtimes.',
+  zodSchema: z.object({
+    backend: z.literal('agent-sdk'),
+    baseUrl: z.string().optional().describe('Optional Cursor API endpoint'),
+    model: z.string().default('auto').describe('Model'),
+    apiKey: z.string().min(1).describe('Cursor Dashboard API key'),
+  }),
+  models: [
+    { id: 'auto', label: 'Auto' },
+    { id: 'composer-2.5-fast', label: 'Composer 2.5 Fast' },
+    { id: 'composer-2.5', label: 'Composer 2.5' },
+    { id: 'cursor-grok-4.6-high-fast', label: 'Cursor Grok 4.6 Fast' },
+    { id: 'cursor-grok-4.6-high', label: 'Cursor Grok 4.6' },
+  ],
+  setup: {
+    apiKeyLabel: 'Cursor Dashboard API key',
+    apiKeyHelp: 'Create an API key in the Cursor Dashboard. OpenAlice passes it only to Cursor Agent as CURSOR_API_KEY.',
+    modelHelp: 'Cursor owns the live model catalog. Auto follows Cursor routing; named models are passed through unchanged.',
+  },
+  writeOnlyFields: ['apiKey'],
+}
+
 // ==================== Custom ====================
 
 export const CUSTOM: PresetDef = {
@@ -485,12 +608,15 @@ export const PRESET_CATALOG: PresetDef[] = [
   CLAUDE_API,
   CODEX_OAUTH,
   CODEX_API,
+  XAI_API,
+  OPENROUTER,
   MINIMAX,
   GLM,
   KIMI,
   DEEPSEEK,
   LONGCAT,
   GEMINI,
+  CURSOR_DASHBOARD,
   CUSTOM,
 ]
 
@@ -504,12 +630,15 @@ export const PRESET_CATALOG: PresetDef[] = [
  * falls back to "let the runtime decide".
  */
 export const DEFAULT_MODEL_BY_VENDOR: Record<string, string> = {
-  anthropic: 'claude-opus-4-8',
+  anthropic: 'claude-opus-5',
   openai: 'gpt-5.6-sol',
-  google: 'gemini-3.1-flash-lite',
+  xai: 'grok-4.6',
+  google: 'gemini-3.6-flash',
   minimax: 'MiniMax-M3',
   glm: 'glm-5.2',
   kimi: 'kimi-k3',
   deepseek: 'deepseek-v4-pro',
   longcat: 'LongCat-2.0',
+  openrouter: 'openai/gpt-5.6-luna',
+  cursor: 'auto',
 }

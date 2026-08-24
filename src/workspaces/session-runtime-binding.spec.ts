@@ -10,8 +10,12 @@ import {
   type ResolvedSessionRuntimeBinding,
   type WorkspaceAiCred,
 } from './cli-adapter.js'
+import { agyAdapter } from './adapters/agy.js'
 import { claudeAdapter } from './adapters/claude.js'
 import { codexAdapter } from './adapters/codex.js'
+import { cursorAdapter } from './adapters/cursor.js'
+import { grokAdapter } from './adapters/grok.js'
+import { ompAdapter } from './adapters/omp.js'
 import { opencodeAdapter } from './adapters/opencode.js'
 import { piAdapter } from './adapters/pi.js'
 import {
@@ -145,6 +149,58 @@ describe('durable Session runtime binding', () => {
     expect(resumed.ai?.apiKey).toBe('rotated-key')
   })
 
+  it('keeps effort absent when a vault model is resolved without an explicit effort', async () => {
+    const resolved = await createSessionRuntimeBinding({
+      adapter: codexAdapter,
+      cwd: '/workspace',
+      selection: { credentialSlug: 'openai-1' },
+      credentials: { 'openai-1': openai },
+    })
+
+    expect(resolved.binding.model).toBe('gpt-5.6-terra')
+    expect(resolved.binding).not.toHaveProperty('reasoningEffort')
+    expect(resolved.ai?.model).toBe('gpt-5.6-terra')
+    expect(resolved.ai).not.toHaveProperty('reasoningEffort')
+  })
+
+  it('persists a Cursor provider credential without a synthetic wire shape', async () => {
+    const credential: Credential = {
+      vendor: 'cursor',
+      authType: 'api-key',
+      apiKey: 'cursor-dashboard-key',
+      baseUrl: 'https://api.cursor.example',
+      lastModel: 'cursor-grok-4.6-high-fast',
+    }
+    const resolved = await createSessionRuntimeBinding({
+      adapter: cursorAdapter,
+      cwd: '/workspace',
+      selection: { credentialSlug: 'cursor-1' },
+      credentials: { 'cursor-1': credential },
+    })
+
+    expect(resolved.binding).toEqual({
+      version: 1,
+      credential: { source: 'vault', credentialSlug: 'cursor-1' },
+      model: 'cursor-grok-4.6-high-fast',
+    })
+    expect(JSON.stringify(resolved.binding)).not.toContain('cursor-dashboard-key')
+    expect(resolved.ai).toMatchObject({
+      apiKey: 'cursor-dashboard-key',
+      baseUrl: 'https://api.cursor.example',
+      model: 'cursor-grok-4.6-high-fast',
+    })
+    expect(resolved.ai).not.toHaveProperty('wireShape')
+
+    const resumed = await resolveSessionRuntimeBinding({
+      adapter: cursorAdapter,
+      cwd: '/workspace',
+      binding: resolved.binding,
+      credentials: { 'cursor-1': { ...credential, apiKey: 'rotated-cursor-key' } },
+    })
+    expect(resumed.binding).toEqual(resolved.binding)
+    expect(resumed.ai?.apiKey).toBe('rotated-cursor-key')
+  })
+
   it('treats native login as the fresh default without reading project config', async () => {
     const read = vi.fn(async () => ({ model: 'native-model', reasoningEffort: 'medium' }) as WorkspaceAiCred)
     const adapter = fakeAdapter(read)
@@ -221,7 +277,7 @@ describe('built-in Agent Session runtime projection', () => {
     env: { AQ_LAUNCHER_REPO_ROOT: '/openalice' },
   }
 
-  it.each([claudeAdapter, codexAdapter, opencodeAdapter, piAdapter])(
+  it.each([claudeAdapter, codexAdapter, cursorAdapter, agyAdapter, grokAdapter, ompAdapter, opencodeAdapter, piAdapter])(
     '$id implements a secret-free argv projection',
     (adapter) => {
       const projected = adapter.sessionRuntime!.project(ctx, runtime)
@@ -248,7 +304,7 @@ describe('built-in Agent Session runtime projection', () => {
     },
   )
 
-  it.each([claudeAdapter, codexAdapter, opencodeAdapter, piAdapter])(
+  it.each([claudeAdapter, codexAdapter, cursorAdapter, agyAdapter, grokAdapter, ompAdapter, opencodeAdapter, piAdapter])(
     '$id accepts a credentialless native binding and still projects model/effort',
     (adapter) => {
       const native = createNativeSessionRuntimeBinding({
@@ -271,12 +327,69 @@ describe('built-in Agent Session runtime projection', () => {
 
   it('projects the native model and effort flags on every launch surface', () => {
     expect(claudeAdapter.sessionRuntime!.project(ctx, runtime).interactiveArgs)
-      .toEqual(['--model', 'session-model', '--effort', 'high'])
+      .toEqual([
+        '--setting-sources=project',
+        '--model',
+        'session-model',
+        '--effort',
+        'high',
+      ])
     expect(codexAdapter.sessionRuntime!.project(ctx, runtime).headlessArgs)
       .toContain('model_reasoning_effort="high"')
     expect(opencodeAdapter.sessionRuntime!.project(ctx, runtime).headlessArgs)
       .toContain('--variant')
     expect(piAdapter.sessionRuntime!.project(ctx, runtime).webArgs)
       .toContain('--extension')
+    expect(ompAdapter.sessionRuntime!.project(ctx, runtime).interactiveArgs)
+      .toEqual(['--model', 'session-model', '--thinking', 'high'])
+    expect(agyAdapter.sessionRuntime!.project(ctx, runtime).interactiveArgs)
+      .toEqual(['--model', 'session-model', '--effort', 'high'])
+  })
+
+  it.each([
+    [claudeAdapter, '--effort'],
+    [codexAdapter, 'model_reasoning_effort'],
+    [opencodeAdapter, '--variant'],
+    [ompAdapter, '--thinking'],
+    [piAdapter, '--thinking'],
+  ] as const)(
+    '$id does not synthesize an effort flag when an explicit model omits effort',
+    (adapter, effortFlag) => {
+      const native = createNativeSessionRuntimeBinding({
+        adapter,
+        selection: { model: 'native-model-override' },
+      })
+      const projected = adapter.sessionRuntime!.project(ctx, native)
+      const serializedArgs = [
+        ...projected.interactiveArgs,
+        ...projected.headlessArgs,
+        ...(projected.webArgs ?? []),
+      ].join(' ')
+
+      expect(serializedArgs).toContain('native-model-override')
+      expect(serializedArgs).not.toContain(effortFlag)
+    },
+  )
+
+  it('keeps only Claude project settings for OpenAlice-managed credentials', () => {
+    const managed = claudeAdapter.sessionRuntime!.project(ctx, runtime)
+    for (const args of [managed.interactiveArgs, managed.headlessArgs, managed.webArgs]) {
+      expect(args).toContain('--setting-sources=project')
+      expect(args).not.toContain('--plugin-dir')
+    }
+
+    const native = createNativeSessionRuntimeBinding({
+      adapter: claudeAdapter,
+      selection: { model: 'native-model-override', reasoningEffort: 'medium' },
+    })
+    const projectedNative = claudeAdapter.sessionRuntime!.project(ctx, native)
+    for (const args of [
+      projectedNative.interactiveArgs,
+      projectedNative.headlessArgs,
+      projectedNative.webArgs,
+    ]) {
+      expect(args).not.toContain('--setting-sources=project')
+      expect(args).not.toContain('--plugin-dir')
+    }
   })
 })

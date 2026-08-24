@@ -55,6 +55,49 @@ describe('model semantics registry', () => {
     })
   })
 
+  it('records Grok 4.6 as required reasoning with xhigh', () => {
+    expect(resolveModelSemantics('xai', 'grok-4.6')).toEqual({
+      contextWindow: 500_000,
+      reasoning: {
+        mode: 'required',
+        efforts: ['low', 'medium', 'high', 'xhigh'],
+        defaultEffort: 'high',
+      },
+    })
+  })
+
+  it('records Grok 4.5 as required reasoning without xhigh', () => {
+    expect(resolveModelSemantics('xai', 'grok-4.5')).toEqual({
+      contextWindow: 500_000,
+      reasoning: {
+        mode: 'required',
+        efforts: ['low', 'medium', 'high'],
+        defaultEffort: 'high',
+      },
+    })
+  })
+
+  it('records current Anthropic and Gemini defaults with their native effort contracts', () => {
+    expect(resolveModelSemantics('anthropic', 'claude-opus-5')).toMatchObject({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoning: {
+        mode: 'adaptive',
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        defaultEffort: 'high',
+      },
+    })
+    expect(resolveModelSemantics('google', 'gemini-3.6-flash')).toMatchObject({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+      reasoning: {
+        mode: 'adaptive',
+        efforts: ['medium', 'high'],
+        defaultEffort: 'medium',
+      },
+    })
+  })
+
   it('describes registered runtime facts compactly', () => {
     expect(describeModelSemantics(resolveModelSemantics('deepseek', 'deepseek-v4-pro')))
       .toBe('Reasoning optional · default effort high · interleaved thinking · 1M context')
@@ -73,6 +116,37 @@ describe('model semantics registry', () => {
     })
   })
 
+  it('registers curated OpenRouter slugs with origin-equivalent facts', () => {
+    expect(resolveModelSemantics('openrouter', 'anthropic/claude-sonnet-5')).toEqual(
+      resolveModelSemantics('anthropic', 'claude-sonnet-5'),
+    )
+    expect(resolveModelSemantics('openrouter', 'x-ai/grok-4.6')).toEqual(
+      resolveModelSemantics('xai', 'grok-4.6'),
+    )
+    expect(resolveModelSemantics('openrouter', 'google/gemini-3.7-flash')).toMatchObject({
+      contextWindow: 1_048_576,
+      reasoning: { mode: 'adaptive', defaultEffort: 'medium' },
+    })
+    expect(resolveModelSemantics('openrouter', 'deepseek/deepseek-v4-flash-0731')).toEqual(
+      resolveModelSemantics('deepseek', 'deepseek-v4-flash'),
+    )
+    expect(resolveModelSemantics('openrouter', 'tencent/hy3')).toMatchObject({
+      contextWindow: 262_144,
+      reasoning: { mode: 'optional', defaultEffort: 'none' },
+    })
+    expect(resolveModelSemantics('openrouter', 'z-ai/glm-5.2')).toEqual(
+      resolveModelSemantics('glm', 'glm-5.2'),
+    )
+    expect(resolveModelSemantics('openrouter', 'minimax/minimax-m3')).toEqual(
+      resolveModelSemantics('minimax', 'MiniMax-M3'),
+    )
+    expect(resolveModelSemantics('openrouter', 'openai/gpt-5.6-sol')).toMatchObject({
+      contextWindow: 1_050_000,
+      reasoning: { mode: 'optional', defaultEffort: 'medium' },
+    })
+    expect(resolveModelSemantics('openrouter', 'some-vendor/unknown-model')).toBeNull()
+  })
+
   it('keeps LongCat\'s documented thinking default separate from effort tiers', () => {
     const semantics = resolveModelSemantics('longcat', 'LongCat-2.0')
     expect(semantics?.reasoning).toEqual({ mode: 'optional', defaultEnabled: true })
@@ -88,8 +162,18 @@ describe('model semantics registry', () => {
       .toEqual(resolveModelSemantics('minimax', 'MiniMax-M2.5'))
   })
 
+  it('records MiniMax M3 as adaptive 1M reasoning without inventing effort tiers', () => {
+    expect(resolveModelSemantics('minimax', 'MiniMax-M3')).toEqual({
+      contextWindow: 1_000_000,
+      reasoning: { mode: 'adaptive', interleaved: true },
+    })
+  })
+
   it('registers every built-in vendor injection default', () => {
     for (const [vendor, model] of Object.entries(DEFAULT_MODEL_BY_VENDOR)) {
+      // Cursor's provider credential is adapter-direct and `auto` delegates
+      // model selection to Cursor; it is intentionally not an exact model fact.
+      if (vendor === 'cursor') continue
       expect(resolveModelSemantics(vendor, model), `${vendor}/${model}`).not.toBeNull()
     }
   })

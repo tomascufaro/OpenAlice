@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkspacesContextValue } from '../contexts/workspaces-context'
 import { i18n } from '../i18n'
 import type { AgentInfo, Workspace } from '../components/workspace/api'
-import { AutoQuantLandingPage, ChatLandingPage } from './ChatLandingPage'
+import { resetAgentRuntimesStore } from '../hooks/useAgentRuntimes'
+import { AutoPredictionLandingPage, AutoQuantLandingPage, ChatLandingPage } from './ChatLandingPage'
 
 const mocks = vi.hoisted(() => ({
   useWorkspaces: vi.fn(),
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   getAgentReadiness: vi.fn(),
   getAgentRuntimeReadiness: vi.fn(),
   probeAgentRuntimeReadiness: vi.fn(),
+  listAgents: vi.fn(),
   getWorkspaceCredentialDefaults: vi.fn(),
   getPresets: vi.fn(),
   getQuickChat: vi.fn(),
@@ -42,6 +44,7 @@ vi.mock('../components/workspace/api', async (importOriginal) => {
     getAgentReadiness: mocks.getAgentReadiness,
     getAgentRuntimeReadiness: mocks.getAgentRuntimeReadiness,
     probeAgentRuntimeReadiness: mocks.probeAgentRuntimeReadiness,
+    listAgents: mocks.listAgents,
   }
 })
 
@@ -110,17 +113,17 @@ function chatWorkspace(): Workspace {
 
 function withInteractivePreference(
   workspace: Workspace,
-  preference: NonNullable<Workspace['runtimeSettings']>['runtime']['askAlice']['agents'][string],
+  preference: NonNullable<Workspace['runtimeSettings']>['runtime']['interactive']['agents'][string],
   agent = 'pi',
 ): Workspace {
   return {
     ...workspace,
     defaultAgent: agent,
     runtimeSettings: {
-      version: 2,
+      version: 3,
       runtime: {
-        askAlice: { agents: {}, recent: { agent, agents: { [agent]: preference } } },
-        issues: { agents: {}, recent: { agents: {} } },
+        interactive: { agents: {}, recent: { agent, agents: { [agent]: preference } } },
+        headless: { agents: {}, recent: { agents: {} } },
       },
     },
   }
@@ -129,6 +132,7 @@ function withInteractivePreference(
 function context(
   workspaces: readonly Workspace[],
   autoQuantDefaultWorkspaceId: string | null = null,
+  autoPredictionDefaultWorkspaceId: string | null = null,
 ): WorkspacesContextValue {
   return {
     workspaces,
@@ -146,9 +150,13 @@ function context(
     autoQuantDefaultWorkspaceId,
     autoQuantPreferenceLoaded: true,
     autoQuantPreferenceError: null,
+    autoPredictionDefaultWorkspaceId,
+    autoPredictionPreferenceLoaded: true,
+    autoPredictionPreferenceError: null,
     refresh: vi.fn(),
     refreshTemplates: vi.fn(async () => undefined),
     refreshAutoQuantPreference: vi.fn(async () => undefined),
+    refreshAutoPredictionPreference: vi.fn(async () => undefined),
     refreshWorkspaceManager: vi.fn(async () => undefined),
     quickStartWorkspaceManager: vi.fn(async () => { throw new Error('not used') }),
     spawn: vi.fn(async () => undefined),
@@ -156,12 +164,18 @@ function context(
     setDefaultAgent: vi.fn(async () => undefined),
     setIssueDefaultAgent: vi.fn(async () => undefined),
     initializeAutoQuant: vi.fn(async () => { throw new Error('not used') }),
+    initializeAutoPrediction: vi.fn(async () => { throw new Error('not used') }),
+    initializeChat: vi.fn(async () => { throw new Error('not used') }),
     setAutoQuantDefaultWorkspace: vi.fn(async () => undefined),
+    setAutoPredictionDefaultWorkspace: vi.fn(async () => undefined),
     quickChat: mocks.quickChat,
     pauseSession: vi.fn(async () => undefined),
     resumeSession: vi.fn(async () => undefined),
     openWebPiSession: vi.fn(async () => undefined),
     requestDeleteSession: vi.fn(),
+    setSessionPresence: vi.fn(async () => undefined),
+    setSessionDisplayName: vi.fn(async () => undefined),
+    updateSessionRuntime: vi.fn(async () => undefined),
     openAgentConfig: vi.fn(),
     saveWorkspaceMetadata: vi.fn(async () => undefined),
     renameWorkspace: vi.fn(async () => undefined),
@@ -191,6 +205,7 @@ let workspaces: Workspace[]
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  resetAgentRuntimesStore()
   await i18n.changeLanguage('en')
   workspaces = [chatWorkspace()]
   mocks.useWorkspaces.mockImplementation(() => context(workspaces))
@@ -246,6 +261,7 @@ beforeEach(async () => {
     overallReady: true,
     checkedAt: '2026-07-16T00:00:00.000Z',
   })
+  mocks.listAgents.mockResolvedValue([piAgent, opencodeAgent])
   mocks.probeAgentRuntimeReadiness.mockImplementation(() => mocks.getAgentRuntimeReadiness())
   mocks.getWorkspaceCredentialDefaults.mockResolvedValue({
     defaults: {},
@@ -316,6 +332,47 @@ describe('ChatLandingPage compact-height layout', () => {
     expect(screen.getByPlaceholderText('Describe the strategy, market, hypothesis, or iteration goal…').className)
       .toContain('min-h-[72px]')
   })
+
+  it('shares the compact-height contract with the Auto Prediction landing', () => {
+    const predictionWorkspace: Workspace = {
+      ...chatWorkspace(),
+      id: 'prediction-1',
+      tag: 'prediction',
+      template: 'auto-prediction',
+    }
+    workspaces = [predictionWorkspace]
+    mocks.useWorkspaces.mockImplementation(() => context(workspaces, null, predictionWorkspace.id))
+
+    render(<AutoPredictionLandingPage spec={{ params: {} }} />)
+
+    expect(screen.getByTestId('harness-landing-scroll').className).toContain('justify-start')
+    expect(screen.getByTestId('harness-landing-stack').className).toContain('my-auto')
+    expect(screen.getByPlaceholderText('Describe the market relationship, settlement question, or evidence gap…').className)
+      .toContain('min-h-[72px]')
+  })
+
+  it('prefills an Auto Prediction Quick Start without launching it', () => {
+    const predictionWorkspace: Workspace = {
+      ...chatWorkspace(),
+      id: 'prediction-1',
+      tag: 'prediction',
+      template: 'auto-prediction',
+    }
+    workspaces = [predictionWorkspace]
+    mocks.useWorkspaces.mockImplementation(() => context(workspaces, null, predictionWorkspace.id))
+
+    render(<AutoPredictionLandingPage spec={{
+      params: {
+        targetWsId: predictionWorkspace.id,
+        initialPrompt: 'Install the declared dependencies, then verify Studio.',
+      },
+    }} />)
+
+    expect((screen.getByPlaceholderText(
+      'Describe the market relationship, settlement question, or evidence gap…',
+    ) as HTMLTextAreaElement).value).toBe('Install the declared dependencies, then verify Studio.')
+    expect(mocks.quickChat).not.toHaveBeenCalled()
+  })
 })
 
 describe('ChatLandingPage Workspace inventory states', () => {
@@ -333,6 +390,17 @@ describe('ChatLandingPage Workspace inventory states', () => {
     expect(screen.queryByPlaceholderText('Ask Alice…')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(failed.refresh).toHaveBeenCalledOnce()
+  })
+
+  it('shows Initialize Ask Alice instead of the composer when no Chat workspace exists', () => {
+    mocks.useWorkspaces.mockReturnValue(context([]))
+
+    render(<ChatLandingPage spec={{ params: {} }} />)
+
+    expect(screen.getByRole('heading', { name: 'Initialize Ask Alice' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Initialize Ask Alice' })).toBeTruthy()
+    expect(screen.queryByPlaceholderText('Ask Alice…')).toBeNull()
+    expect(screen.queryByText('Pinned Harness version')).toBeNull()
   })
 
   it('keeps the composer available with an explicit stale-data notice after a later refresh fails', () => {
@@ -545,7 +613,7 @@ describe('ChatLandingPage keyboard submission', () => {
     render(<ChatLandingPage spec={{ params: { targetWsId: 'chat-1' } }} />)
 
     expect((await screen.findByRole('button', { name: 'Model and reasoning' })).textContent)
-      .toContain('Runtime default model')
+      .toContain('Model managed by runtime')
     fireEvent.click(screen.getByRole('button', { name: 'AI access' }))
     fireEvent.click(screen.getByRole('menuitem', { name: /deepseek-1/ }))
     expect(await findInferenceTrigger('deepseek-v4-flash')).toBeTruthy()
@@ -631,10 +699,10 @@ describe('ChatLandingPage AI source disclosure', () => {
     render(<ChatLandingPage spec={{ params: { targetWsId: 'chat-1' } }} />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'AI access' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: /Use Pi account/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Managed by Pi/ }))
     expect(mocks.rememberQuickChatLaunch).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Model and reasoning' }).textContent)
-      .toContain('Runtime default model')
+      .toContain('Model managed by runtime')
 
     fireEvent.change(screen.getByPlaceholderText('Ask Alice…'), { target: { value: 'Use my account.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -710,11 +778,10 @@ describe('ChatLandingPage AI source disclosure', () => {
     ))
   })
 
-  it('projects a registered Workspace model preference into the new Session launch', async () => {
+  it('keeps effort absent when a registered Workspace model preference omits it', async () => {
     workspaces = [withInteractivePreference(chatWorkspace(), {
       accessMode: 'native',
       model: 'gpt-5.6-sol',
-      reasoningEffort: 'high',
     }, 'codex')]
     mocks.useWorkspaces.mockImplementation(() => ({
       ...context(workspaces),
@@ -769,7 +836,7 @@ describe('ChatLandingPage AI source disclosure', () => {
 
     render(<ChatLandingPage spec={{ params: { targetWsId: 'chat-1' } }} />)
 
-    expect((await findInferenceTrigger('gpt-5.6-sol')).textContent).toContain('high reasoning')
+    expect((await findInferenceTrigger('gpt-5.6-sol')).textContent).toContain('Effort not specified')
     fireEvent.change(screen.getByPlaceholderText('Ask Alice…'), { target: { value: 'Use model defaults.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
@@ -780,7 +847,7 @@ describe('ChatLandingPage AI source disclosure', () => {
       'chat-1',
       'chat',
       'gpt-5.6-sol',
-      'high',
+      undefined,
       'native',
     ))
   })
@@ -811,10 +878,10 @@ describe('ChatLandingPage AI source disclosure', () => {
     expect(screen.queryByText('Workspace settings stay unchanged')).toBeNull()
     expect(await findInferenceTrigger('gemini-3.1-flash-lite')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Configure workspace AI' })).toBeNull()
-    expectDefaultEffort('minimal reasoning')
+    expectDefaultEffort('Effort not specified')
   })
 
-  it('shows a required reasoning policy when the provider has no effort tiers', async () => {
+  it('keeps effort unspecified when a required reasoning model exposes no effort tiers', async () => {
     mocks.listAgentCredentials.mockResolvedValue([{
       slug: 'kimi-1',
       vendor: 'kimi',
@@ -834,7 +901,7 @@ describe('ChatLandingPage AI source disclosure', () => {
     render(<ChatLandingPage spec={{ params: { targetWsId: 'chat-1' } }} />)
 
     await findInferenceTrigger('kimi-k2.7-code')
-    expectDefaultEffort('Reasoning always on')
+    expectDefaultEffort('Effort not specified')
   })
 
   it('keeps an in-progress provider choice when polling replaces equivalent Workspace settings', async () => {

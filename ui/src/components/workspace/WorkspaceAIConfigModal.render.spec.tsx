@@ -207,9 +207,10 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
     expect(screen.getByText('实际启动预览')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'AI 偏好' }))
-    expect(await screen.findByText(/分别配置这个 Workspace 在不同场景下/)).toBeTruthy()
-    expect(screen.getByRole('tab', { name: '问 Alice' })).toBeTruthy()
-    expect(screen.getByRole('tab', { name: '议题' })).toBeTruthy()
+    expect(await screen.findByText(/默认会自动沿用最近一次成功启动/)).toBeTruthy()
+    expect(screen.queryByRole('tab')).toBeNull()
+    expect(screen.getByRole('heading', { name: '交互式 Session' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '无头运行' })).toBeTruthy()
   })
 
   it('keeps compact settings chrome fixed around one scroll owner', async () => {
@@ -393,7 +394,7 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
     expect(screen.getByText(/不会虚构一个强度值/)).toBeTruthy()
   })
 
-  it('prefills a registered effort and saves an explicit Workspace override without probing', async () => {
+  it('leaves a registered effort unspecified and saves an explicit Workspace override without probing', async () => {
     const openAiPi = {
       ...savedPi,
       baseUrl: 'https://api.openai.com/v1',
@@ -441,7 +442,8 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
     )
 
     const effort = await screen.findByRole('combobox', { name: 'Pi 思考强度' })
-    expect((effort as HTMLSelectElement).value).toBe('medium')
+    expect((effort as HTMLSelectElement).value).toBe('')
+    expect((effort as HTMLSelectElement).selectedOptions[0]?.textContent).toBe('未指定')
     fireEvent.change(effort, { target: { value: 'high' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
@@ -453,7 +455,7 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
     expect(mocks.testAgentConfig).not.toHaveBeenCalled()
   })
 
-  it('keeps runtime default selected when the provider publishes tiers but no default', async () => {
+  it('keeps effort unspecified when the provider publishes tiers but no default', async () => {
     const glmPi = {
       ...savedPi,
       baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
@@ -494,7 +496,7 @@ describe('WorkspaceAIConfigModal local model metadata', () => {
 
     const effort = await screen.findByRole('combobox', { name: 'Pi 思考强度' })
     expect((effort as HTMLSelectElement).value).toBe('')
-    expect((effort as HTMLSelectElement).selectedOptions[0]?.textContent).toBe('运行时默认（提供方未公布）')
+    expect((effort as HTMLSelectElement).selectedOptions[0]?.textContent).toBe('未指定')
   })
 
   it('saves a context-only change directly without probing the provider again', async () => {

@@ -30,10 +30,38 @@ describe('demo credential catalog', () => {
     ])
     expect(modelIds('claude-api')).toEqual([
       'claude-fable-5',
-      'claude-opus-4-8',
+      'claude-opus-5',
       'claude-sonnet-5',
       'claude-haiku-4-5',
+      'claude-opus-4-8',
       'claude-sonnet-4-6',
+    ])
+    expect(modelIds('openrouter')).toEqual([
+      'openai/gpt-5.6-luna',
+      'anthropic/claude-sonnet-5',
+      'deepseek/deepseek-v4-flash-0731',
+      'tencent/hy3',
+      'z-ai/glm-5.2',
+      'xiaomi/mimo-v2.5',
+      'anthropic/claude-opus-5',
+      'anthropic/claude-fable-5',
+      'openai/gpt-5.6-sol',
+      'openai/gpt-5.6-terra',
+      'x-ai/grok-4.6',
+      'google/gemini-3.7-flash',
+      'minimax/minimax-m3',
+      'moonshotai/kimi-k3',
+      'deepseek/deepseek-v4-pro',
+    ])
+    expect(modelIds('gemini')).toEqual([
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.5-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-3.1-flash-lite',
+      'gemini-2.5-pro',
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
     ])
   })
 })

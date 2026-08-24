@@ -1,7 +1,20 @@
 import type { HeadlessTaskRecord, HeadlessTaskStatus } from './headless-task-registry.js'
-import type { ResumeIdentityRecord } from './resume-registry.js'
+import {
+  issueAssigneeResumeId,
+  isConnectorDeskIssue,
+  type IssueRecord,
+} from './issues/declaration.js'
+import {
+  sessionPresence,
+  type ResumeIdentityRecord,
+  type SessionPresence,
+} from './resume-registry.js'
 import { sessionPreferredTitle, type SessionRecord } from './session-registry.js'
-import type { ModelReasoningEffort } from '@/ai-providers/model-semantics.js'
+import type { SessionCreatedBy } from './session-metadata.js'
+import {
+  projectPublicSessionRuntime,
+  type PublicSessionRuntime,
+} from './public-session.js'
 
 export interface WorkspaceSessionDirectoryEntry {
   resumeId: string
@@ -10,13 +23,17 @@ export interface WorkspaceSessionDirectoryEntry {
   updatedAt: number
   lifecycle: ResumeIdentityRecord['lifecycle']
   successorResumeId?: string
+  /** Missing means active. */
+  presence?: SessionPresence
+  /** Workspace-owned coworker nametag. Missing means unnamed. */
+  displayName?: string
   resumable: boolean
   active: boolean
-  runtime?: {
-    credentialSource: 'native' | 'vault' | 'workspace'
-    model?: string
-    reasoningEffort?: ModelReasoningEffort
-  }
+  /** Secret-free birth stamp when this product Session was first allocated. */
+  createdBy?: SessionCreatedBy
+  /** Product rosters must not offer transport-owned Sessions as coworkers. */
+  rosterVisibility?: 'hidden'
+  runtime?: PublicSessionRuntime
   latestExecution?: {
     taskId: string
     status: HeadlessTaskStatus
@@ -39,6 +56,22 @@ export interface WorkspaceSessionDirectory {
   sessions: WorkspaceSessionDirectoryEntry[]
 }
 
+export function connectorDeskRosterExclusions(input: {
+  issues: readonly Pick<IssueRecord, 'id' | 'assignee' | 'connectorDesk'>[]
+  executionsForIssue(issueId: string): readonly Pick<HeadlessTaskRecord, 'resumeId'>[]
+  inquiriesForIssue(issueId: string): readonly Pick<HeadlessTaskRecord, 'resumeId'>[]
+}): Set<string> {
+  const hidden = new Set<string>()
+  for (const issue of input.issues) {
+    if (!isConnectorDeskIssue(issue)) continue
+    const assignee = issueAssigneeResumeId(issue.assignee)
+    if (assignee) hidden.add(assignee)
+    for (const task of input.executionsForIssue(issue.id)) hidden.add(task.resumeId)
+    for (const task of input.inquiriesForIssue(issue.id)) hidden.add(task.resumeId)
+  }
+  return hidden
+}
+
 /** Build the public Session directory by joining backend registries while
  * deliberately whitelisting fields. Native runtime ids and launcher record ids
  * never cross this boundary; resumeId is the sole conversation handle. */
@@ -48,6 +81,7 @@ export function buildWorkspaceSessionDirectory(input: {
   interactiveFor(resumeId: string): SessionRecord | undefined
   latestExecutionFor(resumeId: string): HeadlessTaskRecord | null
   isActive(resumeId: string): boolean
+  rosterVisibilityFor?(resumeId: string): 'hidden' | undefined
 }): WorkspaceSessionDirectory {
   return {
     workspace: input.workspace,
@@ -62,18 +96,18 @@ export function buildWorkspaceSessionDirectory(input: {
         updatedAt: identity.updatedAt,
         lifecycle: identity.lifecycle ?? 'active',
         ...(identity.successorResumeId ? { successorResumeId: identity.successorResumeId } : {}),
-        resumable: identity.lifecycle !== 'retired' && Boolean(identity.agentSessionId),
+        ...(sessionPresence(identity) !== 'active' ? { presence: sessionPresence(identity) } : {}),
+        ...(identity.displayName ? { displayName: identity.displayName } : {}),
+        resumable: identity.lifecycle !== 'retired'
+          && sessionPresence(identity) !== 'deleted'
+          && Boolean(identity.agentSessionId),
         active: identity.lifecycle !== 'retired' && input.isActive(identity.resumeId),
+        ...(identity.metadata?.createdBy ? { createdBy: identity.metadata.createdBy } : {}),
+        ...(input.rosterVisibilityFor?.(identity.resumeId) === 'hidden'
+          ? { rosterVisibility: 'hidden' as const }
+          : {}),
         ...(identity.runtimeBinding
-          ? {
-              runtime: {
-                credentialSource: identity.runtimeBinding.credential.source,
-                ...(identity.runtimeBinding.model ? { model: identity.runtimeBinding.model } : {}),
-                ...(identity.runtimeBinding.reasoningEffort
-                  ? { reasoningEffort: identity.runtimeBinding.reasoningEffort }
-                  : {}),
-              },
-            }
+          ? { runtime: projectPublicSessionRuntime(identity.runtimeBinding) }
           : {}),
         ...(execution
           ? {

@@ -90,7 +90,8 @@ export function compatibleCredentials(
   const capabilities = adapter.capabilities.aiProvider
   if (!capabilities) return []
   return Object.entries(credentials).filter(
-    ([, cred]) => pickAgentWire(credentialWires(cred), capabilities, undefined, cred.vendor) !== null,
+    ([, cred]) => capabilities.directVendors?.includes(cred.vendor)
+      || pickAgentWire(credentialWires(cred), capabilities, undefined, cred.vendor) !== null,
   )
 }
 
@@ -164,7 +165,7 @@ export interface CredentialInjectionOverrides {
   contextWindow?: number | null
   /** Unknown-model override for Pi/opencode. Registered model facts win. */
   reasoning?: boolean | null
-  /** Explicit effort override. Known model defaults are filled by the registry. */
+  /** Explicit effort override. Omission stays omitted; provider defaults are metadata, not launch input. */
   reasoningEffort?: WorkspaceAiCred['reasoningEffort']
   /** Anthropic wire only — which header carries the key. Defaults via baseUrl heuristic. */
   authMode?: 'x-api-key' | 'bearer'
@@ -185,6 +186,14 @@ export function credentialToWorkspaceAiCred(
 ): WorkspaceAiCred | null {
   const capabilities = adapter.capabilities.aiProvider
   if (!capabilities) return null
+  if (capabilities.directVendors?.includes(credential.vendor)) {
+    return {
+      baseUrl: credential.baseUrl ?? null,
+      apiKey: credential.apiKey ?? null,
+      model: overrides.model ?? null,
+      ...(overrides.reasoningEffort ? { reasoningEffort: overrides.reasoningEffort } : {}),
+    }
+  }
   const wires = credentialWires(credential as Credential)
   const picked = pickAgentWire(wires, capabilities, overrides.wireShape, credential.vendor)
   if (!picked) return null
@@ -250,9 +259,6 @@ export function applyRegisteredModelSemantics(
   if (registration?.reasoning) {
     const reasoning = modelSupportsReasoning(semantics)
     if (reasoning !== null) next.reasoning = reasoning
-  }
-  if (!next.reasoningEffort && semantics.reasoning?.defaultEffort) {
-    next.reasoningEffort = semantics.reasoning.defaultEffort
   }
   return next
 }
