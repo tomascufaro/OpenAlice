@@ -53,13 +53,17 @@ acting.
 
 ## Behavior contract (read this even if you skip the rest)
 
-1. **Never install silently.** Installation touches the user's machine
+1. **Reddit is explicit-request-only.** Run an `opencli reddit` command only
+   when the current user explicitly asks for Reddit, a subreddit, Reddit posts,
+   or Reddit/social sentiment. Never infer that request from general market
+   research, a ticker, or a task that might benefit from another source.
+2. **Never install silently.** Installation touches the user's machine
    globally (`npm install -g`). Propose it; the user decides.
-2. **Never silently lack data.** If the task would materially benefit from a
+3. **Never silently lack data.** If the task would materially benefit from a
    source opencli covers and it isn't installed (or the needed login isn't
    set up), say exactly what's missing, what it would unlock, and how to set
    it up — then ask. Proceeding quietly with thinner data is a failure mode.
-3. **Read-only, always.** Never invoke commands that mutate state: `post`,
+4. **Read-only, always.** Never invoke commands that mutate state: `post`,
    `reply`, `comment`, `like`, `unlike`, `upvote`, `downvote`, `save`,
    `subscribe`, `unsubscribe`, `follow`, `unfollow`, `block`, `delete`,
    `bookmark`, `send`, `create-draft`, `reply-dm`, `accept`, and anything

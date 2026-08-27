@@ -305,7 +305,7 @@ export function createNewsArchiveTools(
 ) {
   return {
     refreshRedditSignals: tool({
-      description: 'Refresh the selected Reddit RSS feeds on demand (r/tradewithcongress, r/SecurityAnalysis, r/ValueInvesting). Returns a result for each source; an error means that source was unavailable and must not be reported as an empty result.',
+      description: 'Refresh the selected Reddit RSS feeds only when the current user explicitly asks for Reddit or Reddit sentiment. Never call this as background market research or because Reddit might be useful. Returns a result for each source; an error means that source was unavailable and must not be reported as an empty result.',
       inputSchema: z.object({}),
       execute: async () => refreshRedditFeeds
         ? { sources: await refreshRedditFeeds() }
@@ -431,7 +431,7 @@ to find the item (no need to repeat it).`,
     }),
 
     redditSignals: tool({
-      description: `Find public Reddit trading-signal posts from collected Reddit RSS feeds.
+      description: `Find public Reddit trading-signal posts from collected Reddit RSS feeds. Call only when the current user explicitly asks for Reddit or Reddit sentiment; never infer that request from a general research task.
 
 This reads the selected Reddit discovery feeds: r/tradewithcongress,
 r/SecurityAnalysis, and r/ValueInvesting. Each is a lead only and requires verification.

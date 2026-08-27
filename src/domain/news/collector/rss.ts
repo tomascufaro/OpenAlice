@@ -93,7 +93,9 @@ export class NewsCollector {
     let totalItems = 0
     let totalNew = 0
 
-    const activeFeeds = this.feeds.filter((f) => f.enabled !== false)
+    // Reddit discovery is deliberately request-only: `fetchSources()` is its
+    // sole entry point, even if a legacy config still marks a feed enabled.
+    const activeFeeds = this.feeds.filter((f) => f.enabled !== false && !f.source.startsWith('reddit-'))
 
     for (const feed of activeFeeds) {
       try {
