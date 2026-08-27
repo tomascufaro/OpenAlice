@@ -261,6 +261,8 @@ async function main() {
       if (!newsCollector) return []
       return newsCollector.fetchSources([
         'reddit-tradewithcongress',
+        'reddit-insiderdata',
+        'reddit-stockstobuytoday',
         'reddit-securityanalysis',
         'reddit-valueinvesting',
       ])

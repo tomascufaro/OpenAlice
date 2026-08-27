@@ -18,6 +18,8 @@ const REDDIT_SIGNAL_LIMIT = 40
 
 const REDDIT_SIGNAL_SOURCES: Record<string, string> = {
   'reddit-tradewithcongress': 'tradewithcongress',
+  'reddit-insiderdata': 'insiderData',
+  'reddit-stockstobuytoday': 'stockstobuytoday',
   'reddit-securityanalysis': 'SecurityAnalysis',
   'reddit-valueinvesting': 'ValueInvesting',
 }
@@ -78,6 +80,8 @@ export interface RedditSignalResult {
 
 const ON_DEMAND_REDDIT_SOURCES = [
   'reddit-tradewithcongress',
+  'reddit-insiderdata',
+  'reddit-stockstobuytoday',
   'reddit-securityanalysis',
   'reddit-valueinvesting',
 ] as const
@@ -434,7 +438,8 @@ to find the item (no need to repeat it).`,
       description: `Find public Reddit trading-signal posts from collected Reddit RSS feeds. Call only when the current user explicitly asks for Reddit or Reddit sentiment; never infer that request from a general research task.
 
 This reads the selected Reddit discovery feeds: r/tradewithcongress,
-r/SecurityAnalysis, and r/ValueInvesting. Each is a lead only and requires verification.
+r/insiderData, r/stockstobuytoday, r/SecurityAnalysis, and r/ValueInvesting.
+Each is a lead only and requires verification.
 
 Returns public leads only: every result is marked verificationRequired=true. Use filings,
 broker data, and ordinary news tools before treating any post as trade-relevant.`,

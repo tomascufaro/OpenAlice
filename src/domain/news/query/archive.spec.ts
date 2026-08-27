@@ -368,5 +368,14 @@ describe('news tools (pure functions)', () => {
       expect(results).toHaveLength(1)
       expect(results[0]).toMatchObject({ subreddit: 'SecurityAnalysis' })
     })
+
+    it('recognizes the additional on-demand discovery rooms', async () => {
+      const results = await redditSignals(createContext([
+        { id: 104, time: new Date('2025-01-03T13:00:00Z'), title: 'Insider filing notes', content: 'Public discussion.', metadata: { source: 'reddit-insiderdata' } },
+        { id: 105, time: new Date('2025-01-03T14:00:00Z'), title: 'Today stock ideas', content: 'Public discussion.', metadata: { source: 'reddit-stockstobuytoday' } },
+      ]), {})
+
+      expect(results.map((result) => result.subreddit)).toEqual(['insiderData', 'stockstobuytoday'])
+    })
   })
 })
