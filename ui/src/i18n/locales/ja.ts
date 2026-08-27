@@ -582,6 +582,8 @@ export const ja: Resources = {
       sharedDescription: 'これらのインストール単位の設定は Harness Workspace 全体に適用されます。',
       showHeadlessBorn: 'ヘッドレス生まれの Session を表示',
       showHeadlessBornDescription: '既定はオフです。Issue や API から始まり、TUI / WebPi を一度も開いていない Session は Issue ページに残り、デスク名簿には出しません。',
+      showIssueAttached: 'Issue に紐づく Session を表示',
+      showIssueAttachedDescription: '既定はオフです。有効にすると、通常の Issue が現在所有または使用している Session を共有デスク名簿に追加します。Connector チャットの Session は常に非表示です。',
       showUnverifiedReleases: '未検証の Harness リリースを表示',
       showUnverifiedReleasesDescription: '既定はオフです。有効にすると、上流リポジトリの最新安定版も確認します。未検証であることを明示し、適用前のレビューも必要です。',
       askAlice: 'Ask Alice',
